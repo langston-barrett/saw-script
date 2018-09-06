@@ -249,6 +249,8 @@ verifyObligations cc mspec tactic assumes asserts = do
       Unsat stats -> return stats
       SatMulti stats vals -> do
         printOutLnTop Info $ unwords ["Subgoal failed:", nm, msg]
+        printOutLnTop Debug $ "with method specification: \n" ++ show (ppMethodSpec mspec)
+        printOutLnTop Debug $ "and assertion: \n" ++ showTerm assert
         printOutLnTop Info (show stats)
         printOutLnTop OnlyCounterExamples "----------Counterexample----------"
         mapM_ (printOutLnTop OnlyCounterExamples . show) vals

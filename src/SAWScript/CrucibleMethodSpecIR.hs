@@ -32,6 +32,7 @@ import           Control.Monad.Trans.Maybe
 import           Control.Monad.Trans (lift)
 import           Control.Lens
 import Text.PrettyPrint.ANSI.Leijen as PP hiding ((<$>), (<>))
+import qualified Text.PrettyPrint.ANSI.Leijen as PP
 
 import qualified Text.LLVM.AST as L
 import qualified Text.LLVM.PP as L
@@ -61,6 +62,7 @@ import qualified Lang.Crucible.Simulator.Intrinsics as Crucible
 import qualified SAWScript.CrucibleLLVM as CL
 
 import Verifier.SAW.SharedTerm
+import Verifier.SAW.Term.Pretty (showTerm)
 import Verifier.SAW.TypedTerm
 import SAWScript.Options
 
@@ -80,6 +82,33 @@ data SetupValue where
   SetupNull   :: SetupValue
   SetupGlobal :: String -> SetupValue
   deriving (Show)
+
+nest' :: Doc -> Doc -> Doc
+nest' header body = nest 2 (header PP.<$> body)
+
+ppTypedTerm :: TypedTerm -> PP.Doc
+ppTypedTerm tt =
+  let termDoc = text $ showTerm $ ttTerm tt
+      typeDoc = text "TODO"
+  in nest' (text "Typed term:")
+           (vsep $ [ text "Term:" <+> termDoc
+                   , text "Type:" <+> typeDoc
+                   ])
+
+ppSetupValue :: SetupValue -> PP.Doc
+ppSetupValue (SetupVar  (AllocIndex i)) = text $ "Allocation index " ++ show i
+ppSetupValue (SetupTerm tt)             = ppTypedTerm tt
+ppSetupValue (SetupStruct values)       =
+  nest' (text "Struct fields:") (align . vsep $ map ppSetupValue values)
+ppSetupValue (SetupArray  values)       =
+  nest' (text "Array elements:") (align . vsep $ map ppSetupValue values)
+ppSetupValue (SetupElem   _ x)      = text $ "Elem!" ++ show x
+ppSetupValue (SetupField  value name)   =
+  nest' (text "Field:") $ vsep [ text $ "Name: " ++ name
+                               , nest 2 (text "Value: " PP.<$> ppSetupValue value)
+                               ]
+ppSetupValue SetupNull                  = text "null"
+ppSetupValue (SetupGlobal str)          = text $ "Global value " ++ str
 
 setupToTypedTerm :: Options -> SharedContext -> SetupValue -> MaybeT IO TypedTerm
 setupToTypedTerm opts sc sv =
@@ -127,6 +156,12 @@ data PrePost
 data PointsTo = PointsTo SetupValue SetupValue
   deriving (Show)
 
+ppPointsTo :: PointsTo -> PP.Doc
+ppPointsTo (PointsTo pointer pointedTo) = nest 2 $
+  text "Points to:"
+  PP.<$> (nest 2 (text "Pointer: " PP.<$> ppSetupValue pointer))
+  PP.<$> (nest 2 (text "Value: " PP.<$> ppSetupValue pointedTo))
+
 data SetupCondition where
   SetupCond_Equal    :: ProgramLoc ->SetupValue -> SetupValue -> SetupCondition
   SetupCond_Pred     :: ProgramLoc -> TypedTerm -> SetupCondition
@@ -135,6 +170,15 @@ data SetupCondition where
                         TypedTerm ->
                         SetupCondition
   deriving (Show)
+
+ppSetupCondition :: SetupCondition -> PP.Doc
+ppSetupCondition (SetupCond_Equal _ val1 val2) =
+  nest 4 (text "Equality predicate:" PP.<$>
+            (align $ vsep $ [ text "Term 1: " <+> ppSetupValue val1
+                            , text "Term 2: " <+> ppSetupValue val2
+                            ]))
+ppSetupCondition (SetupCond_Pred  _ tt) = nest' (text "Predicate:") (ppTypedTerm tt)
+ppSetupCondition (SetupCond_Ghost  _ _ tt) = nest' (text "A ghost!") (ppTypedTerm tt)
 
 -- | Verification state (either pre- or post-) specification
 data StateSpec' t = StateSpec
@@ -155,6 +199,21 @@ data StateSpec' t = StateSpec
   }
   deriving (Show)
 
+-- | Pretty print a map, given printers for its keys and values
+ppMap :: (a -> PP.Doc) -> (b -> PP.Doc) -> Map a b -> PP.Doc
+ppMap ppa ppb m =
+  align . vsep $ zipWith (\k v -> ppa k <+> text ": " <+> ppb v)
+                   (Map.keys  m)
+                   (Map.elems m)
+
+ppStateSpec :: (Show t) => StateSpec' t -> PP.Doc
+ppStateSpec x =
+  nest' (text "Pointers: ") (align . vsep $ map ppPointsTo $ _csPointsTos x)
+    PP.<$> nest' (text "Fresh variables: ") (align . vsep $ map ppTypedTerm $ _csFreshVars x)
+    PP.<$> nest' (text "Constraints: ") (align . vsep $ map ppSetupCondition $ _csConditions x)
+    PP.<$> nest' (text "Allocation index names: ")
+                 (ppMap (text . show) (text . show) $ _csVarTypeNames x)
+
 type StateSpec = StateSpec' CL.MemType
 
 data CrucibleMethodSpecIR' t =
@@ -170,6 +229,19 @@ data CrucibleMethodSpecIR' t =
   , _csLoc             :: ProgramLoc
   }
   deriving (Show)
+
+-- | Pretty-print a method specification. Used when proof fails.
+ppMethodSpec :: (Show t) => CrucibleMethodSpecIR' t -> PP.Doc
+ppMethodSpec mspec =
+  (text $ "Method name: " ++ _csName mspec)
+  PP.<$> nest' (text "Pre-execution state specification:")
+               (ppStateSpec (_csPreState mspec))
+  PP.<$> nest' (text "Post-execution state specification:")
+               (ppStateSpec (_csPreState mspec))
+  PP.<$> nest' (text "Return value:")
+               (case _csRetValue mspec of
+                  Just v  -> ppSetupValue v
+                  Nothing -> text "(void)")
 
 type CrucibleMethodSpecIR = CrucibleMethodSpecIR' CL.MemType
 

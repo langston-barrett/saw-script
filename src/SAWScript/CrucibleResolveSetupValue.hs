@@ -134,6 +134,7 @@ typeOfSetupValue' cc env nameEnv val =
         s -> fail $ unlines [ "typeOfSetupValue: expected monomorphic term"
                             , "instead got:"
                             , show (Cryptol.pp s)
+                            , "hint: try adding some explicit type annotations"
                             ]
     SetupStruct vs ->
       do memTys <- traverse (typeOfSetupValue cc env nameEnv) vs
