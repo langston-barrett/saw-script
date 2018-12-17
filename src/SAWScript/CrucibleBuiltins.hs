@@ -173,8 +173,13 @@ crucible_llvm_verify bic opts lm nm lemmas checkSat setup tactic =
      setupLoc <- toW4Loc "_SAW_verify_prestate" <$> getPosition
 
      def <- case find (\d -> L.defName d == nm') (L.modDefines llmod) of
-                    Nothing -> fail ("Could not find function named" ++ show nm)
-                    Just decl -> return decl
+              Just decl -> return decl
+              Nothing   -> fail $ unlines $
+                [ "Could not find function named " ++ show nm
+                ] ++ if simVerbose opts < 3
+                     then [ "Run SAW with --sim-verbose=3 to see all function names" ]
+                     else "Available function names:" :
+                            map (("  " ++) . show . L.defName) (L.modDefines llmod)
      st0 <- either (fail . show . ppSetupError) return (initialCrucibleSetupState cc def setupLoc)
 
      -- execute commands of the method spec
@@ -185,7 +190,7 @@ crucible_llvm_verify bic opts lm nm lemmas checkSat setup tactic =
      let globals = cc^.ccLLVMGlobals
      let mvar = Crucible.llvmMemVar (cc^.ccLLVMContext)
      mem0 <- case Crucible.lookupGlobal mvar globals of
-       Nothing -> fail "internal error: LLVM Memory global not found"
+       Nothing   -> fail "internal error: LLVM Memory global not found"
        Just mem0 -> return mem0
      let globals1 = Crucible.llvmGlobals (cc^.ccLLVMContext) mem0
 
@@ -555,15 +560,16 @@ verifySimulate opts cc mspec args assumes top_loc lemmas globals checkSat =
             checkSatOpt <- W4.getOptionSetting Crucible.sawCheckPathSat conf
             _ <- W4.setOpt checkSatOpt checkSat
 
-            let simSt = Crucible.initSimState simCtx globals Crucible.defaultAbortHandler
-            res <-
-              Crucible.executeCrucible simSt $ Crucible.runOverrideSim rty $
-                do mapM_ (registerOverride opts cc simCtx top_loc)
-                         (groupOn (view csName) lemmas)
-                   liftIO $ do
-                     preds <- (traverse . Crucible.labeledPred) (resolveSAWPred cc) assumes
-                     Crucible.addAssumptions sym (Seq.fromList preds)
-                   Crucible.regValue <$> (Crucible.callCFG cfg args')
+            let initExecState =
+                  Crucible.InitialState simCtx globals Crucible.defaultAbortHandler $
+                  Crucible.runOverrideSim rty $
+                  do mapM_ (registerOverride opts cc simCtx top_loc)
+                           (groupOn (view csName) lemmas)
+                     liftIO $ do
+                       preds <- (traverse . Crucible.labeledPred) (resolveSAWPred cc) assumes
+                       Crucible.addAssumptions sym (Seq.fromList preds)
+                     Crucible.regValue <$> (Crucible.callCFG cfg args')
+            res <- Crucible.executeCrucible [] initExecState
             case res of
               Crucible.FinishedResult _ pr ->
                 do Crucible.GlobalPair retval globals1 <-
@@ -701,8 +707,10 @@ setupCrucibleContext bic opts (LLVMModule _ llvm_mod (Some mtrans)) action = do
              -- register all the functions defined in the LLVM module
              mapM_ Crucible.registerModuleFn $ Map.toList $ Crucible.cfgMap mtrans
 
-      let simSt = Crucible.initSimState simctx globals Crucible.defaultAbortHandler
-      res <- Crucible.executeCrucible simSt $ Crucible.runOverrideSim Crucible.UnitRepr setupMem
+      let initExecState =
+            Crucible.InitialState simctx globals Crucible.defaultAbortHandler $
+            Crucible.runOverrideSim Crucible.UnitRepr setupMem
+      res <- Crucible.executeCrucible [] initExecState
       (lglobals, lsimctx) <-
           case res of
             Crucible.FinishedResult st (Crucible.TotalRes gp) -> return (gp^.Crucible.gpGlobals, st)
@@ -775,9 +783,11 @@ runCFG ::
   Crucible.RegMap sym init ->
   IO (Crucible.ExecResult p sym ext (Crucible.RegEntry sym a))
 runCFG simCtx globals h cfg args = do
-  let simSt = Crucible.initSimState simCtx globals Crucible.defaultAbortHandler
-  Crucible.executeCrucible simSt $ Crucible.runOverrideSim (Crucible.handleReturnType h)
+  let initExecState =
+        Crucible.InitialState simCtx globals Crucible.defaultAbortHandler $
+        Crucible.runOverrideSim (Crucible.handleReturnType h)
                  (Crucible.regValue <$> (Crucible.callCFG cfg args))
+  Crucible.executeCrucible [] initExecState
 
 
 extractFromLLVMCFG :: Crucible.HasPtrWidth (Crucible.ArchWidth arch) =>
@@ -1033,10 +1043,13 @@ constructExpandedSetupValue sc loc t =
     Crucible.ArrayType n memTy ->
        SetupArray <$> replicateM n (constructExpandedSetupValue sc loc memTy)
 
-    Crucible.FloatType    -> fail "crucible_fresh_expanded_var: Float not supported"
-    Crucible.DoubleType   -> fail "crucible_fresh_expanded_var: Double not supported"
-    Crucible.MetadataType -> fail "crucible_fresh_expanded_var: Metadata not supported"
-    Crucible.VecType{}    -> fail "crucible_fresh_expanded_var: Vec not supported"
+    Crucible.FloatType      -> failUnsupportedType "Float"
+    Crucible.DoubleType     -> failUnsupportedType "Double"
+    Crucible.MetadataType   -> failUnsupportedType "Metadata"
+    Crucible.VecType{}      -> failUnsupportedType "Vec"
+    Crucible.X86_FP80Type{} -> failUnsupportedType "X86_FP80"
+  where failUnsupportedType tyName = fail $ unwords
+          ["crucible_fresh_expanded_var: " ++ tyName ++ " not supported"]
 
 llvmTypeAlias :: L.Type -> Maybe Crucible.Ident
 llvmTypeAlias (L.Alias i) = Just i
