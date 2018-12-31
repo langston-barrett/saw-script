@@ -109,8 +109,8 @@ import qualified Lang.Crucible.Simulator.GlobalState as Crucible
 import qualified Lang.Crucible.Simulator.RegMap as Crucible
 import qualified Lang.Crucible.Simulator.SimError as Crucible
 
+import qualified Lang.Crucible.LLVM.DataLayout as Crucible
 import qualified Lang.Crucible.LLVM.Translation as Crucible
-
 
 import qualified SAWScript.CrucibleLLVM as Crucible
 
@@ -415,7 +415,7 @@ setupPrePointsTos mspec cc env pts mem0 = foldM go mem0 pts
          -- then the store type should be determined by the rhs.
          memTy <- typeOfSetupValue cc tyenv nameEnv val
          storTy <- Crucible.toStorableType memTy
-         let alignment = 0 -- default to byte-aligned (FIXME)
+         let alignment = Crucible.noAlignment -- default to byte-aligned (FIXME)
          let sym = cc^.ccBackend
          mem' <- Crucible.storeConstRaw sym mem ptr'' storTy alignment val'
          return mem'
@@ -475,7 +475,7 @@ doAlloc cc (_loc,tp) = StateT $ \mem ->
   do let sym = cc^.ccBackend
      let dl = Crucible.llvmDataLayout ?lc
      sz <- W4.bvLit sym Crucible.PtrWidth (Crucible.bytesToInteger (Crucible.memTypeSize dl tp))
-     let alignment = 0 -- default to byte-aligned (FIXME)
+     let alignment = Crucible.maxAlignment dl -- Use the maximum alignment required for any primitive type (FIXME?)
      Crucible.mallocRaw sym mem sz alignment
 
 -- | Allocate read-only space on the LLVM heap to store a value of the
@@ -489,7 +489,7 @@ doAllocConst cc (_loc,tp) = StateT $ \mem ->
   do let sym = cc^.ccBackend
      let dl = Crucible.llvmDataLayout ?lc
      sz <- W4.bvLit sym Crucible.PtrWidth (Crucible.bytesToInteger (Crucible.memTypeSize dl tp))
-     let alignment = 0 -- default to byte-aligned (FIXME)
+     let alignment = Crucible.maxAlignment dl -- Use the maximum alignment required for any primitive type (FIXME?)
      Crucible.mallocConstRaw sym mem sz alignment
 
 --------------------------------------------------------------------------------
@@ -610,8 +610,7 @@ verifySimulate opts cc mspec args assumes top_loc lemmas globals checkSat =
     prepareArgs ctx x =
       Crucible.RegMap <$>
       Ctx.traverseWithIndex (\idx tr ->
-        do a <- Crucible.unpackMemValue sym (x !! Ctx.indexVal idx)
-           v <- Crucible.coerceAny sym tr a
+        do v <- Crucible.unpackMemValue sym tr (x !! Ctx.indexVal idx)
            return (Crucible.RegEntry tr v))
       ctx
 
@@ -705,7 +704,7 @@ setupCrucibleContext bic opts (LLVMModule _ llvm_mod (Some mtrans)) action = do
 
       let setupMem = do
              -- register the callable override functions
-             _llvmctx' <- execStateT Crucible.register_llvm_overrides ctx
+             _llvmctx' <- execStateT (Crucible.register_llvm_overrides llvm_mod) ctx
 
              -- register all the functions defined in the LLVM module
              mapM_ Crucible.registerModuleFn $ Map.toList $ Crucible.cfgMap mtrans
@@ -847,7 +846,7 @@ diffMemTypes ::
 diffMemTypes x0 y0 =
   let wptr :: Natural = fromIntegral (natValue ?ptrWidth) in
   case (x0, y0) of
-    -- Special case; consider a one-element struct to be compatiable with
+    -- Special case; consider a one-element struct to be compatible with
     -- the type of its field
     (Crucible.StructType x, _)
       | V.length (Crucible.siFields x) == 1 -> diffMemTypes (Crucible.fiType (V.head (Crucible.siFields x))) y0
@@ -1033,7 +1032,8 @@ constructExpandedSetupValue sc loc t =
          SetupTerm <$> freshVariable sc "" ty
 
     Crucible.StructType si ->
-       SetupStruct . toList <$> traverse (constructExpandedSetupValue sc loc) (Crucible.siFieldTypes si)
+       SetupStruct False {- FIXME: should this always be unpacked? -} . toList <$>
+       traverse (constructExpandedSetupValue sc loc) (Crucible.siFieldTypes si)
 
     Crucible.PtrType symTy ->
       case Crucible.asMemType symTy of

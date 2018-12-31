@@ -78,7 +78,7 @@ import What4.ProgramLoc
 import Lang.Crucible.FunctionHandle
 import SAWScript.CrucibleLLVM
   ( EndianForm(LittleEndian)
-  , MemImpl, coerceAny, doLoad, doPtrAddOffset, emptyMem
+  , MemImpl, doLoad, doPtrAddOffset, emptyMem
   , AllocType(HeapAlloc, GlobalAlloc), Mutability(..), Mem
   , pattern LLVMPointerRepr, doMalloc, storeConstRaw, packMemValue
   , LLVMPointerType, LLVMVal(LLVMValInt)
@@ -86,6 +86,7 @@ import SAWScript.CrucibleLLVM
   , bitvectorType
   , Bytes, bytesToInteger, toBytes
   , StorageType
+  , noAlignment
   )
 
 import Lang.Crucible.Simulator.RegValue(RegValue'(..),RegValue)
@@ -433,8 +434,7 @@ getLoc l =
          let mem = stateMem s
          let ?ptrWidth = knownNat
          loc <- adjustPtr sym mem obj n
-         anyV <- doLoad sym mem loc (llvmBytes w) 0
-         coerceAny sym (locRepr l) anyV
+         doLoad sym mem loc (llvmBytes w) (locRepr l) noAlignment
 
 
 ptrTy :: (1 <= w) => NatRepr w -> TypeRepr (LLVMPointerType (8 * w))
@@ -465,7 +465,7 @@ setLoc l =
              let lty = llvmBytes w
                  ty  = locRepr l
              val <- packMemValue sym lty ty v
-             let alignment = 0 -- default to byte-aligned (FIXME)
+             let alignment = noAlignment -- default to byte-aligned (FIXME)
              mem1 <- storeConstRaw sym mem loc lty alignment val
 
              return s { stateMem = mem1 }
@@ -623,9 +623,8 @@ readArr opts ptr n wBytes s sMem =
          llT    = llvmBytes wBytes
          getAt i =
            do let ?ptrWidth = knownNat
-              loc  <- adjustPtr sym mem ptrV (i * natValue wBytes)
-              anyV <- doLoad sym mem loc llT 0
-              coerceAny sym cruT anyV
+              loc <- adjustPtr sym mem ptrV (i * natValue wBytes)
+              doLoad sym mem loc llT cruT noAlignment
 
      mapM getAt [ 0 .. n - 1 ]
 
@@ -821,7 +820,7 @@ setCryPost opts s (_nm,p) =
                do let ?ptrWidth = knownNat
                   loc <- adjustPtr sym mem ptrV (bytesToInteger (i *. u))
                   val <- packMemValue sym llT cruT v
-                  let alignment = 0 -- default to byte-aligned (FIXME)
+                  let alignment = noAlignment -- default to byte-aligned (FIXME)
                   storeConstRaw sym mem loc llT alignment val
 
          let cur   = Proxy @p
@@ -865,7 +864,7 @@ allocate sym ar s =
     do let ?ptrWidth = knownNat @64
        let szInt = bytesToInteger (uncurry (*.) (areaSize ar))
        sz <- bvLit sym knownNat szInt
-       let alignment = 0 -- default to byte-aligned (FIXME)
+       let alignment = noAlignment -- default to byte-aligned (FIXME)
        (base,mem) <- doMalloc sym HeapAlloc mut (areaName ar) (stateMem s) sz alignment
        ptr <- adjustPtr sym mem base (bytesToInteger (areaPtr ar))
        return (base,ptr,mem)
@@ -890,7 +889,7 @@ fillFresh sym ptrOk p u todo mem =
          val <- packMemValue sym lty ty =<< freshVal sym ty ptrOk nm
          -- Here we use the write that ignore mutability.
          -- This is because we are writinging initialization code.
-         let alignment = 0 -- default to byte-aligned (FIXME)
+         let alignment = noAlignment -- default to byte-aligned (FIXME)
          mem1 <- storeConstRaw sym mem p lty alignment val
          p1   <- adjustPtr sym mem1 p elS
          fillFresh sym ptrOk p1 u more mem1
@@ -964,7 +963,7 @@ setupGlobals opts gs fs s
 
        let ?ptrWidth = knownNat @64
        sz <- bvLit sym knownNat size
-       let alignment = 0 -- default to byte-aligned (FIXME)
+       let alignment = noAlignment -- default to byte-aligned (FIXME)
        (p,mem) <- doMalloc sym GlobalAlloc Immutable "Globals" (stateMem s) sz alignment
 
        let Just base = asNat (fst (llvmPointerView p))
@@ -1040,7 +1039,7 @@ setupGlobals opts gs fs s
          z    <- natLit sym 0
          val  <- LLVMValInt z <$> bvLit sym w v
          let ?ptrWidth = knownNat
-         let alignment = 0 -- default to byte-aligned (FIXME)
+         let alignment = noAlignment -- default to byte-aligned (FIXME)
          mem1 <- storeConstRaw sym mem p lty alignment val
          p1   <- adjustPtr sym mem1 p szI
          return (p1,mem1)
