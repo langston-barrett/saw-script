@@ -704,7 +704,7 @@ setupCrucibleContext bic opts (LLVMModule _ llvm_mod (Some mtrans)) action = do
 
       let setupMem = do
              -- register the callable override functions
-             _llvmctx' <- execStateT (Crucible.register_llvm_overrides llvm_mod) ctx
+             _llvmctx' <- Crucible.register_llvm_overrides llvm_mod ctx
 
              -- register all the functions defined in the LLVM module
              mapM_ Crucible.registerModuleFn $ Map.toList $ Crucible.cfgMap mtrans
@@ -866,8 +866,8 @@ diffMemTypes x0 y0 =
       | xn == yn ->
         [ (Nothing : path, l , r) | (path, l, r) <- diffMemTypes xt yt ]
     (Crucible.StructType x, Crucible.StructType y)
-      | Crucible.siIsPacked x == Crucible.siIsPacked y
-        && V.length (Crucible.siFields x) == V.length (Crucible.siFields y) ->
+      | V.map Crucible.fiOffset (Crucible.siFields x) ==
+        V.map Crucible.fiOffset (Crucible.siFields y) ->
           let xts = Crucible.siFieldTypes x
               yts = Crucible.siFieldTypes y
           in diffMemTypesList 1 (V.toList (V.zip xts yts))
