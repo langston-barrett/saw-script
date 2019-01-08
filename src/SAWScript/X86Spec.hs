@@ -93,7 +93,10 @@ module SAWScript.X86Spec
 
 import qualified Data.Vector as Vector
 
-import What4.Interface (falsePred, isEq, printSymExpr)
+import Lang.Crucible.Simulator.SimError(SimErrorReason(..), SimError(..))
+import Lang.Crucible.Backend
+  (addAssertion,addAssumption,AssumptionReason(..),LabeledPred(..))
+import What4.Interface (falsePred, isEq, printSymExpr, getCurrentProgramLoc)
 import SAWScript.CrucibleLLVM (ptrEq, ppPtr)
 
 import Verifier.SAW.Term.Pretty(showTerm)
@@ -151,16 +154,33 @@ preserveGP r g =
 class SameVal t where
   sameVal :: t -> t -> Spec p (Value ABool)
 
+-- sameValAt :: X86 t -> Value t -> Value t -> Spec p (Value ABool)
+-- sameValAt t (Value x) (Value y) = do
+--   sym <- getSym
+--   Value <$>
+--     case t of
+--       Bool      -> io $ isEq sym x y
+--       _         -> do
+--         (eq, ok) <- io $ ptrEq sym (bitSize t) x y
+--         loc <- io $ getCurrentProgramLoc sym
+--         let errMsg = unlines [ "Invalid pointer comparison:"
+--                             , "*** Pointer 1: " ++ ppVal (Value x)
+--                             , "*** Pointer 2: " ++ ppVal (Value y)
+--                             ]
+--         io $ addAssertion sym
+--           (LabeledPred ok (SimError loc (AssertFailureSimError msg)))
+--         return eq
+
 sameValAt :: X86 t -> Value t -> Value t -> Spec p (Value ABool)
 sameValAt t (Value x) (Value y) =
   withSym $ \sym ->
     Value <$> (
     let w = bitSize t
     in case t of
-         Bits _    -> ptrEq sym w x y
-         Ptr       -> ptrEq sym w x y
-         BigFloat  -> ptrEq sym w x y
-         Bool      -> isEq sym x y)
+         Bits _    -> fst <$> ptrEq sym w x y -- TODO: this discards the safety condition
+         Ptr       -> fst <$> ptrEq sym w x y
+         BigFloat  -> fst <$> ptrEq sym w x y
+         Bool -> isEq sym x y)
 
 
 instance Infer t => SameVal (Value t) where

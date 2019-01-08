@@ -596,10 +596,11 @@ evalProp opts p s =
       unitByteSize u $ \wBytes ->
       do LeqProof <- return (leqMulPos (Proxy @8) wBytes)
          let wBits = natMultiply (knownNat @8) wBytes
-         need   <- evalCryFunArr opts s n wBits f xs -- expected values
-         have   <- readArr opts ptr n wBytes s (snd s)
-         checks <- zipWithM (ptrEq sym wBits) need have
-         foldM (andPred sym) (truePred sym) checks
+         need      <- evalCryFunArr opts s n wBits f xs -- expected values
+         have      <- readArr opts ptr n wBytes s (snd s)
+         checks    <- zipWithM (ptrEq sym wBits) need have -- get safety assertions
+         andChecks <- mapM (uncurry (andPred sym)) checks  -- `and` them together
+         foldM (andPred sym) (truePred sym) andChecks      -- one big predicate
   where
   sym = optsSym opts
 
@@ -634,7 +635,7 @@ evalSame ::
 evalSame sym t v1 v2 =
   case t of
     BoolRepr          -> isEq sym v1 v2
-    LLVMPointerRepr w -> ptrEq sym w v1 v2
+    LLVMPointerRepr w -> ptrEq sym w v1 v2 >>= uncurry (andPred sym)
     it -> fail ("[evalProp] Unexpected value repr: " ++ show it)
 
 
@@ -937,7 +938,7 @@ mkGlobalMap rmap sym mem region off = sequence (addOffset <$> thisRegion)
   where
     thisRegion = join (findRegion <$> asNat region)
     findRegion r = Map.lookup (fromIntegral r) rmap
-    addOffset p = doPtrAddOffset sym mem p off
+    addOffset p = doPtrAddOffset sym Nothing mem p off
       where ?ptrWidth = knownNat
 
 
@@ -1181,6 +1182,4 @@ adjustPtr sym mem ptr amt
   | amt == 0  = return ptr
   | otherwise =
     do let ?ptrWidth = knownNat
-       doPtrAddOffset sym mem ptr =<< bvLit sym knownNat amt
-
-
+       doPtrAddOffset sym Nothing mem ptr =<< bvLit sym knownNat amt
