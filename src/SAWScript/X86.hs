@@ -494,7 +494,7 @@ doSim opts elf sfs name (globs,overs) st =
                                    insertHandleMap (cfgHandle cfg) (UseCFG cfg (postdomInfo cfg)) $
                                    emptyHandleMap
                               , _cruciblePersonality = MacawSimulatorState
-                              , _profilingMetrics = Map.empty
+                              -- , _profilingMetrics = Map.empty
                               }
        let initGlobals = insertGlobal mvar (stateMem st) emptyGlobals
        let initExecState =

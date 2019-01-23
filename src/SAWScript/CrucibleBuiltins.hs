@@ -60,6 +60,7 @@ module SAWScript.CrucibleBuiltins
 import           Control.Lens
 
 import           Control.Monad.State
+import           Control.Monad.ST (stToIO)
 import           Control.Applicative
 import           Data.Foldable (for_, toList, find)
 import           Data.Function
@@ -100,7 +101,7 @@ import qualified Lang.Crucible.Backend as Crucible
 import qualified Lang.Crucible.Backend.SAWCore as Crucible
 import qualified Lang.Crucible.CFG.Core as Crucible
   (AnyCFG(..), CFG, TypeRepr(..), cfgHandle,
-   asBaseType, AsBaseType(..), freshGlobalVar)
+   asBaseType, AsBaseType(..), freshGlobalVar, SomeCFG(..))
 import qualified Lang.Crucible.CFG.Extension as Crucible
   (IsSyntaxExtension)
 import qualified Lang.Crucible.FunctionHandle as Crucible
@@ -109,6 +110,7 @@ import qualified Lang.Crucible.Simulator.GlobalState as Crucible
 import qualified Lang.Crucible.Simulator.RegMap as Crucible
 import qualified Lang.Crucible.Simulator.SimError as Crucible
 
+import qualified Lang.Crucible.LLVM.Ctors as Crucible
 import qualified Lang.Crucible.LLVM.DataLayout as Crucible
 import qualified Lang.Crucible.LLVM.Translation as Crucible
 
@@ -703,11 +705,19 @@ setupCrucibleContext bic opts (LLVMModule _ llvm_mod (Some mtrans)) action = do
       let globals  = Crucible.llvmGlobals ctx mem
 
       let setupMem = do
-             -- register the callable override functions
-             _llvmctx' <- Crucible.register_llvm_overrides llvm_mod ctx
+            -- register the callable override functions
+            _llvmctx' <- Crucible.register_llvm_overrides llvm_mod ctx
 
-             -- register all the functions defined in the LLVM module
-             mapM_ Crucible.registerModuleFn $ Map.toList $ Crucible.cfgMap mtrans
+            -- register all the functions defined in the LLVM module
+            mapM_ Crucible.registerModuleFn $ Map.toList $ Crucible.cfgMap mtrans
+
+            -- run the functions in llvm.global_ctors
+            when True $ do
+              ctorsCFG <- liftIO . stToIO $
+                Crucible.callCtorsCFG (const True) llvm_mod halloc (mtrans^.Crucible.transContext)
+              case ctorsCFG of
+                Crucible.SomeCFG initCFG ->
+                  Crucible.callCFG initCFG Crucible.emptyRegMap >> return ()
 
       let initExecState =
             Crucible.InitialState simctx globals Crucible.defaultAbortHandler $
