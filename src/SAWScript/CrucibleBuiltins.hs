@@ -31,6 +31,7 @@ module SAWScript.CrucibleBuiltins
     , crucible_llvm_cfg
     , crucible_llvm_extract
     , crucible_llvm_verify
+    , crucible_llvm_global_ctors
     , crucible_setup_val_to_typed_term
     , crucible_spec_size
     , crucible_spec_solvers
@@ -217,6 +218,13 @@ crucible_llvm_verify bic opts lm nm lemmas checkSat setup tactic =
      -- attempt to verify the proof obligations
      stats <- verifyObligations cc methodSpec tactic assumes asserts
      return (methodSpec & csSolverStats .~ stats)
+
+crucible_llvm_global_ctors :: BuiltinContext
+                           -> Options
+                           -> TopLevel ()
+crucible_llvm_global_ctors bic _opts = do
+  opts <- getOptions
+  _
 
 crucible_llvm_unsafe_assume_spec ::
   BuiltinContext   ->
