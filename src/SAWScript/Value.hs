@@ -358,6 +358,17 @@ forValue (x : xs) f =
        bindValue m2 (VLambda $ \v2 ->
          return $ VReturn (VArray (v1 : fromValue v2))))
 
+-- CrucibleOptions --------------------------------------------------------------
+
+data CrucibleOpts =
+  CrucibleOpts { optLLVMGlobalCtors :: Bool
+                 -- ^ Should we run the functions in @llvm.global_ctors@?
+               }
+  deriving (Eq, Ord, Read, Show)
+
+getOptLLVMGlobalCtors :: TopLevel Bool
+getOptLLVMGlobalCtors = TopLevel (gets (optLLVMGlobalCtors . rwCrucibleOpts))
+
 -- TopLevel Monad --------------------------------------------------------------
 
 -- | TopLevel Read-Only Environment.
@@ -373,14 +384,14 @@ data TopLevelRO =
 
 data TopLevelRW =
   TopLevelRW
-  { rwValues  :: Map SS.LName Value
-  , rwTypes   :: Map SS.LName SS.Schema
-  , rwTypedef :: Map SS.Name SS.Type
-  , rwDocs    :: Map SS.Name String
-  , rwCryptol :: CEnv.CryptolEnv
-  , rwPPOpts  :: PPOpts
-  -- , rwCrucibleLLVMCtx :: Crucible.LLVMContext
-  , rwJVMTrans :: CJ.JVMContext
+  { rwValues       :: Map SS.LName Value
+  , rwTypes        :: Map SS.LName SS.Schema
+  , rwTypedef      :: Map SS.Name SS.Type
+  , rwDocs         :: Map SS.Name String
+  , rwCryptol      :: CEnv.CryptolEnv
+  , rwPPOpts       :: PPOpts
+  , rwCrucibleOpts :: CrucibleOptions
+  , rwJVMTrans     :: CJ.JVMContext
   -- ^ crucible-jvm: Handles and info for classes that have already been translated
   }
 
