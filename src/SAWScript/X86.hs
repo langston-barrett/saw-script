@@ -26,7 +26,7 @@ import qualified Data.AIG as AIG
 import           Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
-import           Data.Map ( Map)
+import           Data.Map (Map)
 import qualified Data.Map as Map
 import qualified Data.Text as Text
 import           Data.Text.Encoding(decodeUtf8)
@@ -99,12 +99,10 @@ import Data.Macaw.Symbolic( ArchRegStruct
                           , macawExtensions
                           )
 import qualified Data.Macaw.Symbolic as Macaw ( LookupFunctionHandle(..) )
-import Data.Macaw.Symbolic.CrucGen( MacawSymbolicArchFunctions(..)
-                                  , MacawExt
+import Data.Macaw.Symbolic( MacawExt
                                   , MacawFunctionArgs
-                                  , crucArchRegTypes
                                   )
-import Data.Macaw.Symbolic.PersistentState(macawAssignToCrucM)
+import Data.Macaw.Symbolic.Backend(macawAssignToCrucM, MacawSymbolicArchFunctions(..), crucArchRegTypes)
 import Data.Macaw.X86(X86Reg(..), x86_64_linux_info,x86_64_freeBSD_info)
 import Data.Macaw.X86.ArchTypes(X86_64)
 import Data.Macaw.X86.Symbolic
@@ -379,14 +377,14 @@ loadCry sym mb =
 -- Translation
 
 callHandler :: Overrides -> CallHandler
-callHandler callMap sym = Macaw.LFH $ \st mem regs -> do
+callHandler callMap sym = Macaw.LookupFunctionHandle $ \st mem regs -> do
   case lookupX86Reg X86_IP regs of
     Just (RV ptr) | LLVMPointer base off <- ptr ->
       case (asNat base, asUnsignedBV off) of
         (Just b, Just o) ->
            case Map.lookup (b,o) callMap of
              Just h  -> case h sym of
-                          Macaw.LFH f -> f st mem regs
+                          Macaw.LookupFunctionHandle f -> f st mem regs
              Nothing ->
                fail ("No over-ride for function: " ++ show (ppPtr ptr))
 
@@ -496,6 +494,7 @@ doSim opts elf sfs name (globs,overs) st =
                                    insertHandleMap (cfgHandle cfg) (UseCFG cfg (postdomInfo cfg)) $
                                    emptyHandleMap
                               , _cruciblePersonality = MacawSimulatorState
+                              , _profilingMetrics = Map.empty
                               }
        let initGlobals = insertGlobal mvar (stateMem st) emptyGlobals
        let initExecState =
