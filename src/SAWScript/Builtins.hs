@@ -46,11 +46,10 @@ import System.Process (callCommand, readProcessWithExitCode)
 import Text.Printf (printf)
 import Text.Read (readMaybe)
 
-
 import qualified Verifier.SAW.Cryptol as Cryptol
 import qualified Verifier.SAW.Cryptol.Simpset as Cryptol
-import qualified Cryptol.TypeCheck.AST as Cryptol
 
+-- saw-core
 import Verifier.SAW.Grammar (parseSAWTerm)
 import Verifier.SAW.ExternalFormat
 import Verifier.SAW.FiniteValue
@@ -70,37 +69,31 @@ import Verifier.SAW.Rewriter
 import Verifier.SAW.Testing.Random (scRunTestsTFIO, scTestableType)
 import Verifier.SAW.TypedAST
 
-import qualified SAWScript.SBVParser as SBV
-import SAWScript.ImportAIG
-
-import SAWScript.AST (getVal, pShow, Located(..))
-import SAWScript.Options as Opts
-import SAWScript.Proof
-import SAWScript.TopLevel
-import SAWScript.Utils
-import SAWScript.SAWCorePrimitives( bitblastPrimitives, sbvPrimitives, concretePrimitives )
-import qualified SAWScript.Value as SV
-import SAWScript.Value (ProofScript, printOutLnTop, AIGNetwork)
-
-import SAWScript.Prover.Util(checkBooleanSchema,liftCexBB)
-import SAWScript.Prover.Mode(ProverMode(..))
-import SAWScript.Prover.SolverStats
-import SAWScript.Prover.Rewrite(rewriteEqs)
-import qualified SAWScript.Prover.SBV as Prover
-import qualified SAWScript.Prover.RME as Prover
-import qualified SAWScript.Prover.ABC as Prover
-import qualified SAWScript.Prover.What4 as Prover
-import qualified SAWScript.Prover.Exporter as Prover
-import qualified SAWScript.Prover.MRSolver as Prover
-
+-- cryptol-verifier
 import qualified Verifier.SAW.CryptolEnv as CEnv
+
+-- saw-core-aig
 import qualified Verifier.SAW.Simulator.BitBlast as BBSim
+
+-- saw-core-sbv
 import qualified Verifier.SAW.Simulator.SBV as SBVSim
 
+-- saw-core-what4
+import qualified Verifier.SAW.Simulator.What4 as W4Sim
+
+-- parameterized-utils
+import Data.Parameterized.Nonce
+
+-- crucible-saw
+import qualified Lang.Crucible.Backend.SAWCore as Crucible (newSAWCoreBackend, toSC)
+
+-- sbv
 import qualified Data.SBV.Dynamic as SBV
 
+-- aig
 import qualified Data.AIG as AIG
 
+-- cryptol
 import qualified Cryptol.ModuleSystem.Env as C (meSolverConfig)
 import qualified Cryptol.TypeCheck as C (SolverConfig)
 import qualified Cryptol.TypeCheck.AST as C
@@ -114,6 +107,28 @@ import qualified Cryptol.Eval.Type as C (evalType)
 import qualified Cryptol.Eval.Value as C (fromVBit, fromWord)
 import qualified Cryptol.Utils.Ident as C (packIdent, packModName)
 import Cryptol.Utils.PP (pretty)
+
+import qualified SAWScript.SBVParser as SBV
+import SAWScript.ImportAIG
+
+import SAWScript.AST (getVal, pShow, Located(..))
+import SAWScript.Options as Opts
+import SAWScript.Proof
+import SAWScript.TopLevel
+import SAWScript.Utils
+import SAWScript.SAWCorePrimitives( bitblastPrimitives, sbvPrimitives, concretePrimitives )
+import qualified SAWScript.Value as SV
+import SAWScript.Value (ProofScript, printOutLnTop, AIGNetwork)
+
+import SAWScript.Prover.Util(checkBooleanSchema,liftCexBB)
+import SAWScript.Prover.SolverStats
+import SAWScript.Prover.Rewrite(rewriteEqs)
+import qualified SAWScript.Prover.SBV as Prover
+import qualified SAWScript.Prover.RME as Prover
+import qualified SAWScript.Prover.ABC as Prover
+import qualified SAWScript.Prover.What4 as Prover
+import qualified SAWScript.Prover.Exporter as Prover
+import qualified SAWScript.Prover.MRSolver as Prover
 
 showPrim :: SV.Value -> TopLevel String
 showPrim v = do
@@ -376,8 +391,7 @@ split_goal =
   StateT $ \(ProofState goals concl stats timeout) ->
   case goals of
     [] -> fail "ProofScript failed: no subgoal"
-    (ProofGoal Existential _ _ _ _) : _ -> fail "not a universally-quantified goal"
-    (ProofGoal Universal num ty name prop) : gs ->
+    (ProofGoal num ty name prop) : gs ->
       let (vars, body) = asLambdaList prop in
       case (isGlobalDef "Prelude.and" <@> return <@> return) body of
         Nothing -> fail "split_goal: goal not of form 'Prelude.and _ _'"
@@ -385,8 +399,8 @@ split_goal =
           do sc <- getSharedContext
              t1 <- io $ scLambdaList sc vars p1
              t2 <- io $ scLambdaList sc vars p2
-             let g1 = ProofGoal Universal num (ty ++ ".left") name t1
-             let g2 = ProofGoal Universal num (ty ++ ".right") name t2
+             let g1 = ProofGoal num (ty ++ ".left") name t1
+             let g2 = ProofGoal num (ty ++ ".right") name t2
              return ((), ProofState (g1 : g2 : gs) concl stats timeout)
 
 getTopLevelPPOpts :: TopLevel PPOpts
@@ -450,6 +464,18 @@ simplifyGoal ss = withFirstGoal $ \goal -> do
   let trm = goalTerm goal
   trm' <- io $ rewriteSharedTerm sc ss trm
   return ((), mempty, Just (goal { goalTerm = trm' }))
+
+goal_eval :: [String] -> ProofScript ()
+goal_eval unints =
+  withFirstGoal $ \goal ->
+  do sc <- getSharedContext
+     t0 <- liftIO $ propToPredicate sc (goalTerm goal)
+     let gen = globalNonceGenerator
+     sym <- liftIO $ Crucible.newSAWCoreBackend sc gen
+     (_names, (_mlabels, p)) <- liftIO $ W4Sim.w4Eval sym sc Map.empty unints t0
+     t1 <- liftIO $ Crucible.toSC sym p
+     t2 <- liftIO $ scEqTrue sc t1
+     return ((), mempty, Just (goal { goalTerm = t2 }))
 
 beta_reduce_goal :: ProofScript ()
 beta_reduce_goal = withFirstGoal $ \goal -> do
@@ -560,16 +586,14 @@ parseDimacsSolution vars ls = map lkup vars
     assgnMap = Map.fromList (map varToPair vs)
     lkup v = Map.findWithDefault False v assgnMap
 
-satExternal :: Bool -> String -> [String]
-            -> ProofScript SV.SatResult
-satExternal doCNF execName args = withFirstGoal $ \g0 -> do
+satExternal :: Bool -> String -> [String] -> ProofScript SV.SatResult
+satExternal doCNF execName args = withFirstGoal $ \g -> do
   sc <- SV.getSharedContext
   SV.AIGProxy proxy <- SV.getProxy
   io $ do
-  let (vars, concl) = asPiList (goalTerm g0)
+  let (vars, concl) = asPiList (goalTerm g)
   t0 <- scLambdaList sc vars =<< asEqTrue concl
-  let g = g0 { goalTerm = t0 }
-  t <- rewriteEqs sc (goalTerm g)
+  t <- rewriteEqs sc t0
   tp <- scWhnf sc =<< scTypeOf sc t
   let cnfName = goalType g ++ show (goalNum g) ++ ".cnf"
       argNames = map fst (fst (asPiList tp))
@@ -579,10 +603,9 @@ satExternal doCNF execName args = withFirstGoal $ \g0 -> do
       replaceFileName "%f" = path
       replaceFileName a = a
   BBSim.withBitBlastedPred proxy sc bitblastPrimitives t $ \be l0 shapes -> do
-  let l = case goalQuant g of
-        Existential -> l0
-        Universal -> AIG.not l0
-  vars <- (if doCNF then AIG.writeCNF else writeAIGWithMapping) be l path
+  -- negate formula to turn it into an existentially-quantified SAT query
+  let l = AIG.not l0
+  variables <- (if doCNF then AIG.writeCNF else writeAIGWithMapping) be l path
   (_ec, out, err) <- readProcessWithExitCode execName args' ""
   removeFile path
   unless (null err) $
@@ -590,25 +613,21 @@ satExternal doCNF execName args = withFirstGoal $ \g0 -> do
   let ls = lines out
       sls = filter ("s " `isPrefixOf`) ls
       vls = filter ("v " `isPrefixOf`) ls
-  ft <- scApplyPrelude_False sc
+  ft <- scEqTrue sc =<< scApplyPrelude_False sc
   let stats = solverStats ("external SAT:" ++ execName) (scSharedSize t)
   case (sls, vls) of
     (["s SATISFIABLE"], _) -> do
-      let bs = parseDimacsSolution vars vls
+      let bs = parseDimacsSolution variables vls
       let r = liftCexBB shapes bs
       case r of
         Left msg -> fail $ "Can't parse counterexample: " ++ msg
         Right vs
           | length argNames == length vs -> do
             let r' = SV.SatMulti stats (zip argNames (map toFirstOrderValue vs))
-            case goalQuant g of
-              Universal -> return (r', stats, Just (g { goalTerm = ft }))
-              Existential -> return (r', stats, Nothing)
+            return (r', stats, Just (g { goalTerm = ft }))
           | otherwise -> fail $ unwords ["external SAT results do not match expected arguments", show argNames, show vs]
     (["s UNSATISFIABLE"], []) ->
-      case goalQuant g of
-        Universal -> return (SV.Unsat stats, stats, Nothing)
-        Existential -> return (SV.Unsat stats, stats, Just (g { goalTerm = ft }))
+      return (SV.Unsat stats, stats, Nothing)
     _ -> fail $ "Unexpected result from SAT solver:\n" ++ out
 
 writeAIGWithMapping :: AIG.IsAIG l g => g s -> l s -> FilePath -> IO [Int]
@@ -668,20 +687,15 @@ wrapProver ::
 wrapProver f = do
   sc <- lift $ SV.getSharedContext
   withFirstGoal $ \g -> do
-  let mode = case goalQuant g of
-               Existential -> CheckSat
-               Universal   -> Prove
 
-  (mb,stats) <- io $ f sc (goalTerm g)
+  (mb, stats) <- io $ f sc (goalTerm g)
 
-  let nope r = do ft <- io $ scApplyPrelude_False sc
+  let nope r = do ft <- io $ scEqTrue sc =<< scApplyPrelude_False sc
                   return (r, stats, Just g { goalTerm = ft })
 
-  case (mode,mb) of
-    (CheckSat, Just a)  -> return (SV.SatMulti stats a, stats, Nothing)
-    (CheckSat, Nothing) -> nope (SV.Unsat stats)
-    (Prove, Nothing)    -> return (SV.Unsat stats, stats, Nothing)
-    (Prove, Just a)     -> nope (SV.SatMulti stats a)
+  case mb of
+    Nothing -> return (SV.Unsat stats, stats, Nothing)
+    Just a  -> nope (SV.SatMulti stats a)
 
 --------------------------------------------------
 satBoolector :: ProofScript SV.SatResult
@@ -752,9 +766,7 @@ satWithExporter exporter path ext =
     sc <- SV.getSharedContext
     stats <- io $ Prover.satWithExporter exporter file sc (goalTerm g)
 
-    case goalQuant g of
-      Existential -> return (SV.Unsat stats, stats, Just g)
-      Universal   -> return (SV.Unsat stats, stats, Nothing)
+    return (SV.Unsat stats, stats, Nothing)
 
 satAIG :: FilePath -> ProofScript SV.SatResult
 satAIG path = do
@@ -1116,7 +1128,9 @@ eval_list t = do
 
 -- | Default the values of the type variables in a typed term.
 defaultTypedTerm :: Options -> SharedContext -> C.SolverConfig -> TypedTerm -> IO TypedTerm
-defaultTypedTerm opts sc cfg (TypedTerm schema trm) = do
+defaultTypedTerm opts sc cfg tt@(TypedTerm schema trm)
+  | null (C.sVars schema) = return tt
+  | otherwise = do
   mdefault <- C.withSolver cfg (\s -> C.defaultReplExpr s undefined schema)
   let inst = do (soln, _) <- mdefault
                 mapM (`lookup` soln) (C.sVars schema)
@@ -1200,7 +1214,7 @@ parse_core input = do
 prove_core :: ProofScript SV.SatResult -> String -> TopLevel Theorem
 prove_core script input = do
   t <- parseCore input
-  (r', pstate) <- runStateT script (startProof (ProofGoal Universal 0 "prove" "prove" t))
+  (r', pstate) <- runStateT script (startProof (ProofGoal 0 "prove" "prove" t))
   let r = SV.flipSatResult r'
   opts <- rwPPOpts <$> getTopLevelRW
   case finishProof pstate of

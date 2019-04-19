@@ -40,14 +40,14 @@ import qualified Data.Parameterized.Nonce as Crucible
 -- what4
 import qualified What4.Expr.Builder as B
 import           What4.ProgramLoc (ProgramLoc)
+import qualified What4.Solver.Yices as Yices
 
 import qualified Lang.Crucible.Types as Crucible
   (IntrinsicType, EmptyCtx)
 import qualified Lang.Crucible.CFG.Common as Crucible (GlobalVar)
 import qualified Lang.Crucible.Backend.SAWCore as Crucible
-  (SAWCoreBackend, saw_ctx, toSC, SAWCruciblePersonality)
+  (SAWCoreBackend, saw_ctx, toSC)
 import qualified Lang.Crucible.FunctionHandle as Crucible (HandleAllocator)
-import qualified Lang.Crucible.Simulator.ExecutionTree as Crucible (SimContext)
 import qualified Lang.Crucible.Simulator.Intrinsics as Crucible
   (IntrinsicClass(Intrinsic, muxIntrinsic){-, IntrinsicMuxFn(IntrinsicMuxFn)-})
 
@@ -164,8 +164,8 @@ type GhostValue  = "GhostValue"
 type GhostType   = Crucible.IntrinsicType GhostValue Crucible.EmptyCtx
 type GhostGlobal = Crucible.GlobalVar GhostType
 
-instance Crucible.IntrinsicClass (Crucible.SAWCoreBackend n (B.Flags B.FloatReal)) GhostValue where
-  type Intrinsic (Crucible.SAWCoreBackend n (B.Flags B.FloatReal)) GhostValue ctx = TypedTerm
+instance Crucible.IntrinsicClass (Crucible.SAWCoreBackend n solver (B.Flags B.FloatReal)) GhostValue where
+  type Intrinsic (Crucible.SAWCoreBackend n solver (B.Flags B.FloatReal)) GhostValue ctx = TypedTerm
   muxIntrinsic sym _ _namerep _ctx prd thn els =
     do st <- readIORef (B.sbStateManager sym)
        let sc  = Crucible.saw_ctx st
@@ -230,7 +230,7 @@ data CrucibleSetupState =
   , _csCrucibleContext :: CrucibleContext
   }
 
-type Sym = Crucible.SAWCoreBackend Crucible.GlobalNonceGenerator (B.Flags B.FloatReal)
+type Sym = Crucible.SAWCoreBackend Crucible.GlobalNonceGenerator (Yices.Connection Crucible.GlobalNonceGenerator) (B.Flags B.FloatReal)
 
 data CrucibleContext =
   CrucibleContext
