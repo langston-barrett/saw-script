@@ -98,6 +98,7 @@ import           Data.Parameterized.Some
 
 import qualified What4.Config as W4
 import qualified What4.FunctionName as W4
+import qualified What4.LabeledPred as W4
 import qualified What4.ProgramLoc as W4
 import qualified What4.Interface as W4
 import qualified What4.Expr.Builder as W4
@@ -233,65 +234,65 @@ crucible_llvm_verify ::
   ProofScript SatResult  ->
   TopLevel CrucibleMethodSpecIR
 crucible_llvm_verify bic opts lm nm lemmas checkSat setup tactic = do
-  setupCrucibleContext bic opts lm $ \cc -> do
+  (nm', parent) <- resolveSpecName nm
+  let edef = findDefMaybeStatic (modMod lm) nm'
+  let edecl = findDecl (modMod lm) nm'
+  defOrDecls <- case (edef, edecl) of
+    (Right defs, _) -> return (NE.map Left defs)
+    (_, Right decl) -> return (Right decl NE.:| [])
+    (Left err, Left _) -> fail (displayVerifExceptionOpts opts err)
+  specs <- forM defOrDecls $ \defOrDecl -> setupCrucibleContext bic opts lm $ \cc -> do
     let sym = cc^.ccBackend
     let llmod = cc^.ccLLVMModule
-    (nm', parent) <- resolveSpecName nm
 
     setupLoc <- toW4Loc "_SAW_verify_prestate" <$> getPosition
 
-    let edef = findDefMaybeStatic llmod nm'
-    let edecl = findDecl llmod nm'
-    est0 <- case (edef, edecl) of
-      (Right defs, _) -> return $
-        mapM (\def -> initialCrucibleSetupState cc def setupLoc parent) defs
-      (_, Right decl) -> return $
-        (\x -> x NE.:| []) <$> initialCrucibleSetupStateDecl cc decl setupLoc parent
-      (Left err, Left _) -> fail (displayVerifExceptionOpts opts err)
-    st0s <- either (fail . show . ppSetupError) return est0
+    let est0 = case defOrDecl of
+                 Left def -> initialCrucibleSetupState cc def setupLoc parent
+                 Right decl -> initialCrucibleSetupStateDecl cc decl setupLoc parent
+    st0 <- either (fail . show . ppSetupError) return est0
 
-    specs <- forM st0s $ \st0 -> do
-     -- execute commands of the method spec
-     liftIO $ W4.setCurrentProgramLoc sym setupLoc
-     methodSpec <- view csMethodSpec <$> execStateT (runCrucibleSetupM setup) st0
+    -- execute commands of the method spec
+    liftIO $ W4.setCurrentProgramLoc sym setupLoc
+    methodSpec <- view csMethodSpec <$> execStateT (runCrucibleSetupM setup) st0
 
-     -- set up the LLVM memory with a pristine heap
-     let globals = cc^.ccLLVMGlobals
-     let mvar = Crucible.llvmMemVar (cc^.ccLLVMContext)
-     mem0 <- case Crucible.lookupGlobal mvar globals of
-       Nothing   -> fail "internal error: LLVM Memory global not found"
-       Just mem0 -> return mem0
-     -- push a memory stack frame if starting from a breakpoint
-     let mem = if isJust (methodSpec^.csParentName)
-           then mem0
-             { Crucible.memImplHeap = Crucible.pushStackFrameMem
-                 (Crucible.memImplHeap mem0)
-             }
-           else mem0
-     let globals1 = Crucible.llvmGlobals (cc^.ccLLVMContext) mem
+    -- set up the LLVM memory with a pristine heap
+    let globals = cc^.ccLLVMGlobals
+    let mvar = Crucible.llvmMemVar (cc^.ccLLVMContext)
+    mem0 <- case Crucible.lookupGlobal mvar globals of
+      Nothing   -> fail "internal error: LLVM Memory global not found"
+      Just mem0 -> return mem0
+    -- push a memory stack frame if starting from a breakpoint
+    let mem = if isJust (methodSpec^.csParentName)
+              then mem0
+                { Crucible.memImplHeap = Crucible.pushStackFrameMem
+                  (Crucible.memImplHeap mem0)
+                }
+              else mem0
+    let globals1 = Crucible.llvmGlobals (cc^.ccLLVMContext) mem
 
-     -- construct the initial state for verifications
-     (args, assumes, env, globals2) <- io $ verifyPrestate cc methodSpec globals1
+    -- construct the initial state for verifications
+    (args, assumes, env, globals2) <- io $ verifyPrestate cc methodSpec globals1
 
-     -- save initial path conditions
-     frameIdent <- io $ Crucible.pushAssumptionFrame sym
+    -- save initial path conditions
+    frameIdent <- io $ Crucible.pushAssumptionFrame sym
 
-     -- run the symbolic execution
-     top_loc <- toW4Loc "crucible_llvm_verify" <$> getPosition
-     (ret, globals3)
-        <- io $ verifySimulate opts cc methodSpec args assumes top_loc lemmas globals2 checkSat
+    -- run the symbolic execution
+    top_loc <- toW4Loc "crucible_llvm_verify" <$> getPosition
+    (ret, globals3)
+       <- io $ verifySimulate opts cc methodSpec args assumes top_loc lemmas globals2 checkSat
 
-     -- collect the proof obligations
-     asserts <- verifyPoststate opts (biSharedContext bic) cc
-                    methodSpec env globals3 ret
+    -- collect the proof obligations
+    asserts <- verifyPoststate opts (biSharedContext bic) cc
+                   methodSpec env globals3 ret
 
-     -- restore previous assumption state
-     _ <- io $ Crucible.popAssumptionFrame sym frameIdent
+    -- restore previous assumption state
+    _ <- io $ Crucible.popAssumptionFrame sym frameIdent
 
-     -- attempt to verify the proof obligations
-     stats <- verifyObligations cc methodSpec tactic assumes asserts
-     return (methodSpec & csSolverStats .~ stats)
-    return (NE.head specs)
+    -- attempt to verify the proof obligations
+    stats <- verifyObligations cc methodSpec tactic assumes asserts
+    return (methodSpec & csSolverStats .~ stats)
+  return (NE.head specs)
 
 crucible_llvm_unsafe_assume_spec ::
   BuiltinContext   ->
@@ -340,9 +341,13 @@ verifyObligations cc mspec tactic assumes asserts = do
         printOutLnTop Info (show stats)
         printOutLnTop OnlyCounterExamples "----------Counterexample----------"
         opts <- sawPPOpts <$> rwPPOpts <$> getTopLevelRW
-        let showAssignment (name, val) = "  " ++ name ++ ": " ++ show (ppFirstOrderValue opts val)
-        mapM_ (printOutLnTop OnlyCounterExamples . showAssignment) vals
-        io $ fail "Proof failed." -- Mirroring behavior of llvm_verify
+        if null vals then
+          printOutLnTop OnlyCounterExamples "<<All settings of the symbolic variables constitute a counterexample>>"
+        else
+          let showAssignment (name, val) = "  " ++ name ++ ": " ++ show (ppFirstOrderValue opts val) in
+          mapM_ (printOutLnTop OnlyCounterExamples . showAssignment) vals
+        printOutLnTop OnlyCounterExamples "----------------------------------"
+        fail "Proof failed." -- Mirroring behavior of llvm_verify
   printOutLnTop Info $ unwords ["Proof succeeded!", nm]
   return (mconcat stats)
 
@@ -828,7 +833,7 @@ verifyPoststate opts sc cc mspec env0 globals ret =
      st <- case matchPost of
              Left err      -> fail (show err)
              Right (_, st) -> return st
-     io $ for_ (view osAsserts st) $ \(p, r) ->
+     io $ for_ (view osAsserts st) $ \(W4.LabeledPred p r) ->
        Crucible.addAssertion sym (Crucible.LabeledPred p r)
 
      obligations <- io $ Crucible.getProofObligations sym
@@ -909,26 +914,36 @@ setupCrucibleContext bic opts (LLVMModule _ llvm_mod (Some mtrans)) action = do
 
 --------------------------------------------------------------------------------
 
-setupArg :: SharedContext
+setupArg :: forall tp. SharedContext
          -> Sym
          -> IORef (Seq (ExtCns Term))
          -> Crucible.TypeRepr tp
          -> IO (Crucible.RegEntry Sym tp)
 setupArg sc sym ecRef tp =
-  case Crucible.asBaseType tp of
-    Crucible.AsBaseType btp -> do
+  case (Crucible.asBaseType tp, tp) of
+    (Crucible.AsBaseType btp, _) -> do
        sc_tp <- CrucibleSAW.baseSCType sym sc btp
-       i     <- scFreshGlobalVar sc
-       ecs   <- readIORef ecRef
-       let len = Seq.length ecs
-       let ec = EC i ("arg_"++show len) sc_tp
-       writeIORef ecRef (ecs Seq.|> ec)
-       t     <- scFlatTermF sc (ExtCns ec)
+       t     <- freshGlobal sc_tp
        elt   <- CrucibleSAW.bindSAWTerm sym btp t
        return (Crucible.RegEntry tp elt)
 
-    Crucible.NotBaseType ->
+    (Crucible.NotBaseType, Crucible.LLVMPointerRepr w) -> do
+       sc_tp <- scBitvector sc (natValue w)
+       t     <- freshGlobal sc_tp
+       elt   <- CrucibleSAW.bindSAWTerm sym (Crucible.BaseBVRepr w) t
+       elt'  <- Crucible.llvmPointer_bv sym elt
+       return (Crucible.RegEntry tp elt')
+
+    (Crucible.NotBaseType, _) ->
       fail $ unwords ["Crucible extraction currently only supports Crucible base types", show tp]
+  where
+    freshGlobal sc_tp = do
+      i     <- scFreshGlobalVar sc
+      ecs   <- readIORef ecRef
+      let len = Seq.length ecs
+      let ec = EC i ("arg_"++show len) sc_tp
+      writeIORef ecRef (ecs Seq.|> ec)
+      scFlatTermF sc (ExtCns ec)
 
 setupArgs :: SharedContext
           -> Sym
@@ -968,7 +983,6 @@ runCFG simCtx globals h cfg args = do
                  (Crucible.regValue <$> (Crucible.callCFG cfg args))
   Crucible.executeCrucible [] initExecState
 
-
 extractFromLLVMCFG :: Crucible.HasPtrWidth (Crucible.ArchWidth arch) =>
    Options -> SharedContext -> CrucibleContext arch -> Crucible.AnyCFG (Crucible.LLVM arch) -> IO TypedTerm
 extractFromLLVMCFG opts sc cc (Crucible.AnyCFG cfg) =
@@ -981,10 +995,15 @@ extractFromLLVMCFG opts sc cc (Crucible.AnyCFG cfg) =
       case res of
         Crucible.FinishedResult _ pr -> do
             gp <- getGlobalPair opts pr
-            t <- Crucible.asSymExpr
-                   (gp^.Crucible.gpValue)
-                   (CrucibleSAW.toSC sym)
-                   (fail $ unwords ["Unexpected return type:", show (Crucible.regType (gp^.Crucible.gpValue))])
+            let regv = gp^.Crucible.gpValue
+                rt = Crucible.regType regv
+                rv = Crucible.regValue regv
+            t <- case rt of
+                   Crucible.LLVMPointerRepr _ -> do
+                     bv <- Crucible.projectLLVM_bv sym rv
+                     CrucibleSAW.toSC sym bv
+                   Crucible.BVRepr _ -> CrucibleSAW.toSC sym rv
+                   _ -> fail $ unwords ["Unexpected return type:", show rt]
             t' <- scAbstractExts sc (toList ecs) t
             mkTypedTerm sc t'
         Crucible.AbortedResult _ ar -> do
