@@ -308,13 +308,26 @@ crucible_llvm_unsafe_assume_spec bic opts lm nm setup =
     loc <- toW4Loc "_SAW_assume_spec" <$> getPosition
     let edef = findDefMaybeStatic llmod nm'
     let edecl = findDecl llmod nm'
-    est0 <- case (edef, edecl) of
-              (Right defs, _) -> return $ initialCrucibleSetupState cc (NE.head defs) loc parent
-              (_, Right decl) -> return $ initialCrucibleSetupStateDecl cc decl loc parent
-              (Left err, Left _) -> fail (displayVerifExceptionOpts opts err)
+    defOrDecl <- case (edef, edecl) of
+                   (Right defs, _) -> return (Left (NE.head defs))
+                   (_, Right decl) -> return (Right decl)
+                   (Left err, Left _) -> fail (displayVerifExceptionOpts opts err)
+    let est0 = case defOrDecl of
+                 Left def -> initialCrucibleSetupState cc def loc parent
+                 Right decl -> initialCrucibleSetupStateDecl cc decl loc parent
     case est0 of
       Left err -> fail (show (ppSetupError err))
-      Right st0 -> (view csMethodSpec) <$> execStateT (runCrucibleSetupM setup) st0
+      Right st0 -> do
+        spec <- view csMethodSpec <$> execStateT (runCrucibleSetupM setup) st0
+        let typeErrors =
+              case defOrDecl of
+                Left def -> checkMethodSpecAgainstDefine def spec
+                Right decl -> checkMethodSpecAgainstDeclare decl spec
+        case typeErrors of
+          [] -> pure spec
+          _ -> fail $ unlines $
+            "Encountered type errors while creating override:" :
+              map (show . ppTypeMismatch) typeErrors
 
 verifyObligations :: CrucibleContext arch
                   -> CrucibleMethodSpecIR

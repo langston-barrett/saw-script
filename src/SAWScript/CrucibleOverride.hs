@@ -26,6 +26,11 @@ module SAWScript.CrucibleOverride
   , osAsserts
   , termSub
 
+    -- * Typechecking overrides
+  , checkMethodSpecAgainstDeclare
+  , checkMethodSpecAgainstDefine
+  , ppTypeMismatch
+
   , learnCond
   , matchArg
   , methodSpecHandler
@@ -903,6 +908,76 @@ assignTerm sc cc loc prepost var val =
 --             p <- liftIO $ resolveSAWPred cc t
 --             addAssert p (Crucible.AssertFailureSimError ("literal equality " ++ stateCond prepost))
 
+
+------------------------------------------------------------------------
+-- Typechecking overrides against LLVM declarations/definitions
+
+-- | The ways in which a declaration/definition can be out of alignment with
+--   an override specification
+data TypeMismatch =
+    UnsupportedReturnType L.Type String
+  | MismatchedReturnType L.Type Crucible.MemType Crucible.MemType
+  | NotVoid L.Type
+  deriving (Generic)
+
+ppTypeMismatch :: TypeMismatch -> PP.Doc
+ppTypeMismatch =
+  \case
+    UnsupportedReturnType lty msg -> PP.vcat $ map PP.text
+      [ "LLVM declaration uses an unsupported return type:"
+      , "Type: " <> show lty
+      , msg
+      ]
+    MismatchedReturnType lty liftedTy memTy -> PP.vcat
+      [ PP.text "Mismatched return type:"
+      , PP.text ("Type declared in the LLVM module: " <> show lty)
+      , PP.text "Crucible representation of the above type: " <>
+        Crucible.ppMemType liftedTy
+      , PP.text "Return type of override: " <>
+        Crucible.ppMemType memTy
+      ]
+    NotVoid lty -> PP.hcat $ map PP.text
+      [ "Override doesn't specify a return value, but the LLVM declaration "
+      , "returns a value of type "
+      , show lty
+      ]
+
+checkMethodSpecAgainstDeclare ::
+  (?lc :: Crucible.TypeContext) =>
+  L.Declare            {- ^ declaration in the LLVM module -} ->
+  CrucibleMethodSpecIR {- ^ override specification -} ->
+  [TypeMismatch]
+checkMethodSpecAgainstDeclare decl spec =
+  let ret = matchRetType (L.decRetType decl) (spec ^. csRet)
+  in ret
+
+checkMethodSpecAgainstDefine ::
+  (?lc :: Crucible.TypeContext) =>
+  L.Define             {- ^ definition in the LLVM module -} ->
+  CrucibleMethodSpecIR {- ^ override specification -} ->
+  [TypeMismatch]
+checkMethodSpecAgainstDefine def spec =
+  let ret = matchRetType (L.defRetType def) (spec ^. csRet)
+  in ret
+
+matchRetType ::
+  (?lc :: Crucible.TypeContext) =>
+  L.Type ->
+  Maybe Crucible.MemType ->
+  [TypeMismatch]
+matchRetType lty memTy =
+  case memTy of
+    Nothing ->
+      case lty of
+        L.PrimType L.Void -> []
+        _ -> [NotVoid lty]
+    Just crucibleRetTy ->
+      case Crucible.liftMemType lty of
+        Left e -> [UnsupportedReturnType lty e]
+        Right liftedTy ->
+          if crucibleRetTy == liftedTy
+          then []
+          else [MismatchedReturnType lty liftedTy crucibleRetTy]
 
 ------------------------------------------------------------------------
 
