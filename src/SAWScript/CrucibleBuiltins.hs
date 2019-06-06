@@ -178,7 +178,7 @@ ppAbortedResult _ (Crucible.AbortedExec Crucible.InfeasibleBranch _) =
   text "Infeasible branch"
 ppAbortedResult cc (Crucible.AbortedExec abt gp) = do
   Crucible.ppAbortExecReason abt <$$> ppGlobalPair cc gp
-ppAbortedResult cc (Crucible.AbortedBranch _predicate trueBranch falseBranch) =
+ppAbortedResult cc (Crucible.AbortedBranch loc predicate trueBranch falseBranch) =
   vcat
     [ text "Both branches aborted after a symbolic branch."
     -- TODO: These conditions can be large, symbolic SAWCore predicates, so they
@@ -186,8 +186,8 @@ ppAbortedResult cc (Crucible.AbortedBranch _predicate trueBranch falseBranch) =
     -- source location associated with the branch, then we could print that.
     -- See https://github.com/GaloisInc/crucible/issues/260
 
-    -- , text "Branch condition:"
-    -- , indent 2 (text (show predicate))
+    , text "Location of control-flow branching:"
+    , indent 2 (text (show (W4.plSourceLoc loc)))
     , text "Message from the true branch:"
     , indent 2 (ppAbortedResult cc trueBranch)
     , text "Message from the false branch:"
@@ -276,8 +276,13 @@ createMethodSpec verificationArgs bic opts lm nm setup = do
     let sym = cc^.ccBackend
     let llmod = cc^.ccLLVMModule
 
+    -- Set an appropriate source location
     pos <- getPosition
-    let setupLoc = toW4Loc "_SAW_verify_prestate" pos
+    let setupLoc = flip toW4Loc pos $
+          case verificationArgs of
+            Just _  -> "_crucible_llvm_verify"
+            Nothing -> "_crucible_llvm_unsafe_assume_spec"
+    liftIO $ W4.setCurrentProgramLoc sym setupLoc
 
     let est0 = case defOrDecl of
                  Left def -> initialCrucibleSetupState cc def setupLoc parent
@@ -285,7 +290,6 @@ createMethodSpec verificationArgs bic opts lm nm setup = do
     st0 <- either (fail . show . ppSetupError) return est0
 
     -- execute commands of the method spec
-    liftIO $ W4.setCurrentProgramLoc sym setupLoc
 
     methodSpec <- view csMethodSpec <$> execStateT (runCrucibleSetupM setup) st0
 
@@ -798,7 +802,7 @@ verifySimulate opts cc mspec args assumes top_loc lemmas globals checkSat =
         do Crucible.GlobalPair retval globals1 <-
              case pr of
                Crucible.TotalRes gp -> return gp
-               Crucible.PartialRes _ gp _ ->
+               Crucible.PartialRes _ _ gp _ ->
                  do printOutLn opts Info "Symbolic simulation completed with side conditions."
                     return gp
            let ret_ty = mspec^.csRet
@@ -938,7 +942,7 @@ setupCrucibleContext bic opts (LLVMModule _ llvm_mod (Some mtrans)) action = do
       (lglobals, lsimctx) <-
           case res of
             Crucible.FinishedResult st (Crucible.TotalRes gp) -> return (gp^.Crucible.gpGlobals, st)
-            Crucible.FinishedResult st (Crucible.PartialRes _ gp _) -> return (gp^.Crucible.gpGlobals, st)
+            Crucible.FinishedResult st (Crucible.PartialRes _ _ gp _) -> return (gp^.Crucible.gpGlobals, st)
             _ -> fail "simulator initialization failed!"
 
       return
@@ -1004,7 +1008,7 @@ getGlobalPair ::
 getGlobalPair opts pr =
   case pr of
     Crucible.TotalRes gp -> return gp
-    Crucible.PartialRes _ gp _ -> do
+    Crucible.PartialRes _ _ gp _ -> do
       printOutLn opts Info "Symbolic simulation completed with side conditions."
       return gp
 

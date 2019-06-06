@@ -122,6 +122,7 @@ import SAWScript.JVM.CrucibleOverride
 import SAWScript.JVM.CrucibleResolveSetupValue
 import SAWScript.CrucibleBuiltinsJVM ()
 
+-- | TODO: This is copy/pasted from LLVM's CrucibleBuiltins
 ppAbortedResult :: CrucibleContext
                 -> Crucible.AbortedResult Sym a
                 -> Doc
@@ -129,8 +130,22 @@ ppAbortedResult _ (Crucible.AbortedExec Crucible.InfeasibleBranch _) =
   text "Infeasible branch"
 ppAbortedResult cc (Crucible.AbortedExec abt gp) = do
   Crucible.ppAbortExecReason abt -- <$$> ppGlobalPair cc gp
-ppAbortedResult _ (Crucible.AbortedBranch _ _ _) =
-  text "Aborted branch"
+ppAbortedResult cc (Crucible.AbortedBranch loc predicate trueBranch falseBranch) =
+  vcat
+    [ text "Both branches aborted after a symbolic branch."
+    -- TODO: These conditions can be large, symbolic SAWCore predicates, so they
+    -- aren't really helpful to show. It would be nice if Crucible tracked the
+    -- source location associated with the branch, then we could print that.
+    -- See https://github.com/GaloisInc/crucible/issues/260
+
+    , text "Location of control-flow branching:"
+    , indent 2 (text (show loc))
+    -- , indent 2 (text (show (W4.plSourceLoc loc)))
+    , text "Message from the true branch:"
+    , indent 2 (ppAbortedResult cc trueBranch)
+    , text "Message from the false branch:"
+    , indent 2 (ppAbortedResult cc falseBranch)
+    ]
 ppAbortedResult _ (Crucible.AbortedExit ec) =
   text "Branch exited:" <+> text (show ec)
 
@@ -588,7 +603,7 @@ verifySimulate opts cc mspec args assumes top_loc lemmas globals checkSat =
          do Crucible.GlobalPair retval globals1 <-
               case pr of
                 Crucible.TotalRes gp -> return gp
-                Crucible.PartialRes _ gp _ ->
+                Crucible.PartialRes _ _ gp _ ->
                   do printOutLn opts Info "Symbolic simulation completed with side conditions."
                      return gp
             let ret_ty = mspec^.csRet

@@ -658,10 +658,6 @@ methodSpecHandler opts sc cc top_loc css retTy = do
                       --       , "that failed symbolically:"
                       --       ]) PP.<$$> bullets '-' (map ppSymbolicFailure symFalse)
                       --   ]
-
-                      -- Note that we only print these in case no override had
-                      -- individually (concretely or symbolically) false
-                      -- preconditions.
                       | not (null unsat) && null false && null symFalse ->
                         [ PP.text (unwords
                           [ "The conjunction of these overrides' preconditions"
