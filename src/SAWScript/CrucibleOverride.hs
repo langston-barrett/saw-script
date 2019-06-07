@@ -846,8 +846,8 @@ enforceDisjointness cc loc ss =
               a = Crucible.SimError loc $
                     Crucible.AssertFailureSimError "Memory regions not disjoint"
 
-        , ((ploc,pty),p):ps <- tails memsRW
-        , ((qloc,qty),q)    <- ps ++ memsRO
+        , ((ploc,pty,_pbytes),p):ps <- tails memsRW
+        , ((qloc,qty,_qbytes),q)    <- ps ++ memsRO
         ]
 
 
@@ -1349,14 +1349,13 @@ learnPred sc cc loc prepost t =
 -- | Perform an allocation as indicated by a 'crucible_alloc'
 -- statement from the postcondition section.
 executeAllocation ::
-  (?lc :: Crucible.TypeContext, Crucible.HasPtrWidth (Crucible.ArchWidth arch)) =>
+  (Crucible.HasPtrWidth (Crucible.ArchWidth arch)) =>
   Options                        ->
   CrucibleContext arch           ->
-  (AllocIndex, (W4.ProgramLoc, Crucible.MemType)) ->
+  (AllocIndex, (W4.ProgramLoc, Crucible.MemType, Crucible.Bytes)) ->
   OverrideMatcher arch RW ()
-executeAllocation opts cc (var, (loc, memTy)) =
+executeAllocation opts cc (var, (loc, memTy, bytes)) =
   do let sym = cc^.ccBackend
-     let dl = Crucible.llvmDataLayout ?lc
      {-
      memTy <- case Crucible.asMemType symTy of
                 Just memTy -> return memTy
@@ -1364,9 +1363,8 @@ executeAllocation opts cc (var, (loc, memTy)) =
                 -}
      liftIO $ printOutLn opts Debug $ unwords ["executeAllocation:", show var, show memTy]
      let memVar = Crucible.llvmMemVar $ (cc^.ccLLVMContext)
-     let w = Crucible.memTypeSize dl memTy
      mem <- readGlobal memVar
-     sz <- liftIO $ W4.bvLit sym Crucible.PtrWidth (Crucible.bytesToInteger w)
+     sz <- liftIO $ W4.bvLit sym Crucible.PtrWidth (Crucible.bytesToInteger bytes)
      let alignment = Crucible.noAlignment -- default to byte alignment (FIXME)
      let l = show (W4.plSourceLoc loc) ++ " (Poststate)"
      (ptr, mem') <- liftIO $

@@ -67,7 +67,7 @@ type LLVMPtr wptr = Crucible.LLVMPtr Sym wptr
 -- corresponding to the given field name.
 resolveSetupValueInfo ::
   CrucibleContext wptr            {- ^ crucible context  -} ->
-  Map AllocIndex (W4.ProgramLoc, Crucible.MemType) {- ^ allocation types  -} ->
+  Map AllocIndex (W4.ProgramLoc, Crucible.MemType, Crucible.Bytes) {- ^ allocation types  -} ->
   Map AllocIndex Crucible.Ident   {- ^ allocation type names -} ->
   SetupValue                      {- ^ pointer to struct -} ->
   L.Info                          {- ^ field index       -}
@@ -89,7 +89,7 @@ resolveSetupValueInfo cc env nameEnv v =
 -- corresponding to the given field name.
 resolveSetupFieldIndex ::
   CrucibleContext wptr            {- ^ crucible context  -} ->
-  Map AllocIndex (W4.ProgramLoc, Crucible.MemType) {- ^ allocation types  -} ->
+  Map AllocIndex (W4.ProgramLoc, Crucible.MemType, Crucible.Bytes) {- ^ allocation types  -} ->
   Map AllocIndex Crucible.Ident   {- ^ allocation type names -} ->
   SetupValue                      {- ^ pointer to struct -} ->
   String                          {- ^ field name        -} ->
@@ -113,7 +113,7 @@ resolveSetupFieldIndex cc env nameEnv v n =
 resolveSetupFieldIndexOrFail ::
   MonadFail m =>
   CrucibleContext wptr            {- ^ crucible context  -} ->
-  Map AllocIndex (W4.ProgramLoc, Crucible.MemType) {- ^ allocation types  -} ->
+  Map AllocIndex (W4.ProgramLoc, Crucible.MemType, Crucible.Bytes) {- ^ allocation types  -} ->
   Map AllocIndex Crucible.Ident   {- ^ allocation type names -} ->
   SetupValue                      {- ^ pointer to struct -} ->
   String                          {- ^ field name        -} ->
@@ -136,7 +136,7 @@ resolveSetupFieldIndexOrFail cc env nameEnv v n =
 typeOfSetupValue ::
   MonadFail m =>
   CrucibleContext wptr ->
-  Map AllocIndex (W4.ProgramLoc, Crucible.MemType) ->
+  Map AllocIndex (W4.ProgramLoc, Crucible.MemType, Crucible.Bytes) {- ^ allocation types  -} ->
   Map AllocIndex Crucible.Ident ->
   SetupValue ->
   m Crucible.MemType
@@ -147,7 +147,7 @@ typeOfSetupValue cc env nameEnv val =
 typeOfSetupValue' :: forall m wptr.
   MonadFail m =>
   CrucibleContext wptr ->
-  Map AllocIndex (W4.ProgramLoc, Crucible.MemType) ->
+  Map AllocIndex (W4.ProgramLoc, Crucible.MemType, Crucible.Bytes) {- ^ allocation types  -} ->
   Map AllocIndex Crucible.Ident ->
   SetupValue ->
   m Crucible.MemType
@@ -156,7 +156,7 @@ typeOfSetupValue' cc env nameEnv val =
     SetupVar i ->
       case Map.lookup i env of
         Nothing -> fail ("typeOfSetupValue: Unresolved prestate variable:" ++ show i)
-        Just (_,memTy) -> return (Crucible.PtrType (Crucible.MemType memTy))
+        Just (_, memTy, _) -> return (Crucible.PtrType (Crucible.MemType memTy))
     SetupTerm tt ->
       case ttSchema tt of
         Cryptol.Forall [] [] ty ->
@@ -239,7 +239,7 @@ resolveSetupVal :: forall arch.
   Crucible.HasPtrWidth (Crucible.ArchWidth arch) =>
   CrucibleContext arch ->
   Map AllocIndex (LLVMPtr (Crucible.ArchWidth arch)) ->
-  Map AllocIndex (W4.ProgramLoc, Crucible.MemType) ->
+  Map AllocIndex (W4.ProgramLoc, Crucible.MemType, Crucible.Bytes) {- ^ allocation types  -} ->
   Map AllocIndex Crucible.Ident ->
   SetupValue             ->
   IO LLVMVal

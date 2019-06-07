@@ -45,6 +45,7 @@ module SAWScript.CrucibleBuiltins
     , crucible_fresh_pointer
     , crucible_llvm_unsafe_assume_spec
     , crucible_fresh_var
+    , crucible_alloc_with_size
     , crucible_alloc
     , crucible_alloc_readonly
     , crucible_fresh_expanded_val
@@ -576,16 +577,16 @@ assertEqualVals cc v1 v2 =
 
 --------------------------------------------------------------------------------
 
-doAllocWithMutability ::
+doAllocWithMutabilityAndSize ::
   (?lc :: Crucible.TypeContext, Crucible.HasPtrWidth (Crucible.ArchWidth arch)) =>
   Crucible.Mutability        ->
   CrucibleContext arch       ->
-  (W4.ProgramLoc, Crucible.MemType) ->
+  (W4.ProgramLoc, Crucible.MemType, Crucible.Bytes) ->
   StateT MemImpl IO (LLVMPtr (Crucible.ArchWidth arch))
-doAllocWithMutability mut cc (loc, tp) = StateT $ \mem ->
+doAllocWithMutabilityAndSize mut cc (loc, tp, sz) = StateT $ \mem ->
   do let sym = cc^.ccBackend
+     sz <- W4.bvLit sym Crucible.PtrWidth (Crucible.bytesToInteger sz)
      let dl = Crucible.llvmDataLayout ?lc
-     sz <- W4.bvLit sym Crucible.PtrWidth (Crucible.bytesToInteger (Crucible.memTypeSize dl tp))
      let alignment = Crucible.maxAlignment dl -- Use the maximum alignment required for any primitive type (FIXME?)
      let l = show (W4.plSourceLoc loc)
      liftIO $
@@ -596,18 +597,18 @@ doAllocWithMutability mut cc (loc, tp) = StateT $ \mem ->
 doAlloc ::
   (?lc :: Crucible.TypeContext, Crucible.HasPtrWidth (Crucible.ArchWidth arch)) =>
   CrucibleContext arch       ->
-  (W4.ProgramLoc, Crucible.MemType) ->
+  (W4.ProgramLoc, Crucible.MemType, Crucible.Bytes) ->
   StateT MemImpl IO (LLVMPtr (Crucible.ArchWidth arch))
-doAlloc = doAllocWithMutability Crucible.Mutable
+doAlloc = doAllocWithMutabilityAndSize Crucible.Mutable
 
 -- | Allocate read-only space on the LLVM heap to store a value of the
 -- given type. Returns the pointer to the allocated memory.
 doAllocConst ::
   (?lc :: Crucible.TypeContext, Crucible.HasPtrWidth (Crucible.ArchWidth arch)) =>
   CrucibleContext arch       ->
-  (W4.ProgramLoc, Crucible.MemType) ->
+  (W4.ProgramLoc, Crucible.MemType, Crucible.Bytes) ->
   StateT MemImpl IO (LLVMPtr (Crucible.ArchWidth arch))
-doAllocConst = doAllocWithMutability Crucible.Immutable
+doAllocConst = doAllocWithMutabilityAndSize Crucible.Immutable
 
 --------------------------------------------------------------------------------
 
@@ -1291,27 +1292,44 @@ symTypeAlias :: Crucible.SymType -> Maybe Crucible.Ident
 symTypeAlias (Crucible.Alias i) = Just i
 symTypeAlias _ = Nothing
 
+crucible_alloc_with_size_in ::
+  BuiltinContext ->
+  Options        ->
+  Lens' StateSpec (Map AllocIndex (W4.ProgramLoc, Crucible.MemType, Crucible.Bytes)) ->
+  Int {-^ size to allocate (in bytes) -} ->
+  L.Type         ->
+  CrucibleSetupM SetupValue
+crucible_alloc_with_size_in bic _opt lens size llvmType = CrucibleSetupM $ do
+  let ?dl = Crucible.llvmDataLayout ?lc
+  loc <- getW4Position "crucible_alloc_with_size"
+  memTy <- memTypeForLLVMType bic llvmType
+  n <- csVarCounter <<%= nextAllocIndex
+  currentState.lens.at n ?= (loc, memTy, Crucible.toBytes size)
+  -- TODO: refactor
+  case llvmTypeAlias llvmType of
+    Just i -> currentState.csVarTypeNames.at n ?= i
+    Nothing -> return ()
+  return (SetupVar n)
+
+crucible_alloc_with_size ::
+  BuiltinContext ->
+  Options        ->
+  Int {-^ size to allocate (in bytes) -} ->
+  L.Type         ->
+  CrucibleSetupM SetupValue
+crucible_alloc_with_size bic opt = crucible_alloc_with_size_in bic opt csAllocs
+
 crucible_alloc ::
   BuiltinContext ->
   Options        ->
   L.Type         ->
   CrucibleSetupM SetupValue
-crucible_alloc _bic _opt lty = CrucibleSetupM $
-  do let ?dl = Crucible.llvmDataLayout ?lc
-     loc <- getW4Position "crucible_alloc"
-     memTy <- case Crucible.liftMemType lty of
-       Right s -> return s
-       Left err -> fail $ unlines [ "unsupported type in crucible_alloc: " ++ show (L.ppType lty)
-                                  , "Details:"
-                                  , err
-                                  ]
-     n <- csVarCounter <<%= nextAllocIndex
-     currentState.csAllocs.at n ?= (loc,memTy)
-     -- TODO: refactor
-     case llvmTypeAlias lty of
-       Just i -> currentState.csVarTypeNames.at n ?= i
-       Nothing -> return ()
-     return (SetupVar n)
+crucible_alloc bic opts llvmType = CrucibleSetupM $ do
+  let ?dl = Crucible.llvmDataLayout ?lc
+  loc <- getW4Position "crucible_alloc"
+  memTy <- memTypeForLLVMType bic llvmType
+  let sz = Crucible.memTypeSize ?dl memTy
+  crucible_alloc_with_size bic opts (fromIntegral $ Crucible.bytesToInteger sz) llvmType
 
 crucible_alloc_readonly ::
   BuiltinContext ->

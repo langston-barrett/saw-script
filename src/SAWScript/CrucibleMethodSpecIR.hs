@@ -169,7 +169,7 @@ data StateSpec' t = StateSpec
   }
   deriving (Show)
 
-type StateSpec = StateSpec' (ProgramLoc, CL.MemType)
+type StateSpec = StateSpec' (ProgramLoc, CL.MemType, CL.Bytes)
 
 data CrucibleMethodSpecIR' t =
   CrucibleMethodSpec
@@ -216,7 +216,7 @@ instance Crucible.IntrinsicClass (Crucible.SAWCoreBackend n solver (B.Flags B.Fl
 
 makeLenses ''StateSpec'
 
-csAllocations :: CrucibleMethodSpecIR -> Map AllocIndex (ProgramLoc, CL.MemType)
+csAllocations :: CrucibleMethodSpecIR -> Map AllocIndex (ProgramLoc, CL.MemType, CL.Bytes)
 csAllocations
   = Map.unions
   . toListOf ((csPreState <> csPostState) . (csAllocs <> csConstAllocs <> csFreshPointers))
