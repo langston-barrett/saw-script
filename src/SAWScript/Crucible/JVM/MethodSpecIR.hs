@@ -28,6 +28,8 @@ Stability   : provisional
 module SAWScript.Crucible.JVM.MethodSpecIR where
 
 import           Control.Lens
+import           Data.Map (Map)
+import qualified Data.Map as Map
 import           Control.Monad.ST (RealWorld)
 import           Data.Monoid ((<>))
 import qualified Text.PrettyPrint.ANSI.Leijen as PPL hiding ((<$>), (<>))
@@ -172,12 +174,79 @@ initialCrucibleSetupState ::
   ProgramLoc ->
   Setup.CrucibleSetupState CJ.JVM
 initialCrucibleSetupState cc method loc =
-  Setup.makeCrucibleSetupState cc $
+  makeCrucibleSetupState cc $
     initialDefCrucibleMethodSpecIR
       (cc ^. jccCodebase)
       (J.className $ cc ^. jccJVMClass)
       method
       loc
+
+makeCrucibleSetupState ::
+  MS.CrucibleContext CJ.JVM ->
+  MS.CrucibleMethodSpecIR CJ.JVM ->
+  Setup.CrucibleSetupState CJ.JVM
+makeCrucibleSetupState cc mspec =
+  Setup.CrucibleSetupState
+    { Setup._csVarCounter      = MS.AllocIndex 0
+    , Setup._csPrePost         = MS.PreState
+    , Setup._csResolvedState   = emptyResolvedState
+    , Setup._csMethodSpec      = mspec
+    , Setup._csCrucibleContext = cc
+    }
+
+--------------------------------------------------------------------------------
+-- ** ResolvedState
+
+type instance MS.ResolvedState CJ.JVM = ResolvedState
+
+-- | A datatype to keep track of which parts of the simulator state
+-- have been initialized already. For each allocation unit or global,
+-- we keep a list of element-paths that identify the initialized
+-- sub-components.
+data ResolvedState =
+  ResolvedState
+  { _rsAllocs :: Map MS.AllocIndex [Either String Int]
+  , _rsGlobals :: Map String [Either String Int]
+  }
+
+emptyResolvedState :: ResolvedState
+emptyResolvedState = ResolvedState Map.empty Map.empty
+
+-- | Record the initialization of the pointer represented by the given
+-- SetupValue.
+markResolved ::
+  MS.SetupValue CJ.JVM ->
+  Either String Int ->
+  ResolvedState ->
+  ResolvedState
+markResolved val0 path0 rs = go path0 val0
+  where
+    go path val =
+      case val of
+        MS.SetupVar n       -> rs {_rsAllocs = Map.alter (ins path) n (_rsAllocs rs) }
+        MS.SetupGlobal () c -> rs {_rsGlobals = Map.alter (ins path) c (_rsGlobals rs)}
+        _                   -> rs
+
+    ins path Nothing = Just [path]
+    ins path (Just paths) = Just (path : paths)
+
+-- | Test whether the pointer represented by the given SetupValue has
+-- been initialized already.
+testResolved ::
+  MS.SetupValue CJ.JVM ->
+  Either String Int ->
+  ResolvedState ->
+  Bool
+testResolved val0 path0 rs = go path0 val0
+  where
+    go path val =
+      case val of
+        MS.SetupVar n       -> test path (Map.lookup n (_rsAllocs rs))
+        MS.SetupGlobal () c -> test path (Map.lookup c (_rsGlobals rs))
+        _                   -> False
+
+    test _ Nothing = False
+    test path (Just paths) = path `elem` paths -- any (`isPrefixOf` path) paths
 
 --------------------------------------------------------------------------------
 

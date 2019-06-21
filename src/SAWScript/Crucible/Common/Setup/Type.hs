@@ -21,7 +21,6 @@ module SAWScript.Crucible.Common.Setup.Type
   , csResolvedState
   , csMethodSpec
   , csCrucibleContext
-  , makeCrucibleSetupState
   --
   , CrucibleSetupT
   , currentState
@@ -50,25 +49,12 @@ data CrucibleSetupState ext =
   CrucibleSetupState
   { _csVarCounter      :: !MS.AllocIndex
   , _csPrePost         :: !MS.PrePost
-  , _csResolvedState   :: MS.ResolvedState
+  , _csResolvedState   :: !(MS.ResolvedState ext)
   , _csMethodSpec      :: MS.CrucibleMethodSpecIR ext
   , _csCrucibleContext :: MS.CrucibleContext ext
   }
 
 makeLenses ''CrucibleSetupState
-
-makeCrucibleSetupState ::
-  MS.CrucibleContext ext ->
-  MS.CrucibleMethodSpecIR ext ->
-  CrucibleSetupState ext
-makeCrucibleSetupState cc mspec =
-  CrucibleSetupState
-    { _csVarCounter      = MS.AllocIndex 0
-    , _csPrePost         = MS.PreState
-    , _csResolvedState   = MS.emptyResolvedState
-    , _csMethodSpec      = mspec
-    , _csCrucibleContext = cc
-    }
 
 --------------------------------------------------------------------------------
 -- ** CrucibleSetupT

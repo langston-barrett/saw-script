@@ -1472,9 +1472,9 @@ crucible_points_to typed _bic _opt (getAllLLVM -> ptr) (getAllLLVM -> val) =
        do let ?lc = cc^.ccTypeCtx
           st <- get
           let rs = st ^. Setup.csResolvedState
-          if st ^. Setup.csPrePost == PreState && MS.testResolved ptr [] rs
+          if st ^. Setup.csPrePost == PreState && testResolved ptr rs
             then fail "Multiple points-to preconditions on same pointer"
-            else Setup.csResolvedState %= MS.markResolved ptr []
+            else Setup.csResolvedState %= markResolved ptr
           let env = MS.csAllocations (st ^. Setup.csMethodSpec)
               nameEnv = MS.csTypeNames (st ^. Setup.csMethodSpec)
           ptrTy <- typeOfSetupValue cc env nameEnv ptr

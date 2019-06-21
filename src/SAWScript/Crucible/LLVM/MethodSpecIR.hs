@@ -34,7 +34,10 @@ module SAWScript.Crucible.LLVM.MethodSpecIR where
 import           Control.Lens
 import           Data.Functor.Compose (Compose(..))
 import           Data.IORef
+import           Data.List (isPrefixOf)
 import           Data.Monoid ((<>))
+import           Data.Map (Map)
+import qualified Data.Map as Map
 import           Data.Type.Equality (TestEquality(..), (:~:)(Refl))
 import qualified Text.LLVM.AST as L
 import qualified Text.LLVM.PP as L
@@ -321,7 +324,7 @@ initialCrucibleSetupState ::
   Either SetupError (Setup.CrucibleSetupState (CL.LLVM arch))
 initialCrucibleSetupState cc def loc parent = do
   ms <- initialDefCrucibleMethodSpecIR (cc ^. ccLLVMModule) def loc parent
-  return $ Setup.makeCrucibleSetupState cc ms
+  return $ makeCrucibleSetupState cc ms
 
 initialCrucibleSetupStateDecl ::
   (?lc :: CL.TypeContext) =>
@@ -332,7 +335,74 @@ initialCrucibleSetupStateDecl ::
   Either SetupError (Setup.CrucibleSetupState (CL.LLVM arch))
 initialCrucibleSetupStateDecl cc dec loc parent = do
   ms <- initialDeclCrucibleMethodSpecIR (cc ^. ccLLVMModule) dec loc parent
-  return $ Setup.makeCrucibleSetupState cc ms
+  return $ makeCrucibleSetupState cc ms
+
+makeCrucibleSetupState ::
+  MS.CrucibleContext (CL.LLVM arch) ->
+  MS.CrucibleMethodSpecIR (CL.LLVM arch) ->
+  Setup.CrucibleSetupState (CL.LLVM arch)
+makeCrucibleSetupState cc mspec =
+  Setup.CrucibleSetupState
+    { Setup._csVarCounter      = MS.AllocIndex 0
+    , Setup._csPrePost         = MS.PreState
+    , Setup._csResolvedState   = emptyResolvedState
+    , Setup._csMethodSpec      = mspec
+    , Setup._csCrucibleContext = cc
+    }
+
+--------------------------------------------------------------------------------
+-- ** ResolvedState
+
+type instance MS.ResolvedState (CL.LLVM _) = ResolvedState
+
+-- | A datatype to keep track of which parts of the simulator state
+-- have been initialized already. For each allocation unit or global,
+-- we keep a list of element-paths that identify the initialized
+-- sub-components.
+data ResolvedState =
+  ResolvedState
+  {_rsAllocs :: Map MS.AllocIndex [[Int]]
+  ,_rsGlobals :: Map String [[Int]]
+  }
+
+emptyResolvedState :: ResolvedState
+emptyResolvedState = ResolvedState Map.empty Map.empty
+
+-- | Record the initialization of the pointer represented by the given
+-- SetupValue.
+markResolved ::
+  MS.SetupValue (CL.LLVM arch) ->
+  ResolvedState ->
+  ResolvedState
+markResolved val0 rs = go [] val0
+  where
+    go path val =
+      case val of
+        MS.SetupVar n       -> rs {_rsAllocs = Map.alter (ins path) n (_rsAllocs rs) }
+        MS.SetupGlobal () c -> rs {_rsGlobals = Map.alter (ins path) c (_rsGlobals rs)}
+        MS.SetupElem () v i -> go (i : path) v
+        _                   -> rs
+
+    ins path Nothing = Just [path]
+    ins path (Just paths) = Just (path : paths)
+
+-- | Test whether the pointer represented by the given SetupValue has
+-- been initialized already.
+testResolved ::
+  MS.SetupValue (CL.LLVM arch) ->
+  ResolvedState ->
+  Bool
+testResolved val0 rs = go [] val0
+  where
+    go path val =
+      case val of
+        MS.SetupVar n       -> test path (Map.lookup n (_rsAllocs rs))
+        MS.SetupGlobal () c -> test path (Map.lookup c (_rsGlobals rs))
+        MS.SetupElem () v i -> go (i : path) v
+        _                   -> False
+
+    test _ Nothing = False
+    test path (Just paths) = any (`isPrefixOf` path) paths
 
 --------------------------------------------------------------------------------
 -- ** AllLLVM/SomeLLVM

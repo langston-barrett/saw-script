@@ -883,9 +883,9 @@ jvm_field_is typed _bic _opt ptr fname val =
      st <- get
      let rs = st ^. Setup.csResolvedState
      let path = Left fname
-     if st ^. Setup.csPrePost == PreState && MS.testResolved ptr [] rs
+     if st ^. Setup.csPrePost == PreState && testResolved ptr path rs
        then fail $ "Multiple points-to preconditions on same pointer (field " ++ fname ++ ")"
-       else Setup.csResolvedState %= MS.markResolved ptr [path]
+       else Setup.csResolvedState %= markResolved ptr path
      let env = MS.csAllocations (st ^. Setup.csMethodSpec)
          nameEnv = MS.csTypeNames (st ^. Setup.csMethodSpec)
      ptrTy <- typeOfSetupValue cc env nameEnv ptr
@@ -908,9 +908,9 @@ jvm_elem_is typed _bic _opt ptr idx val =
      st <- get
      let rs = st ^. Setup.csResolvedState
      let path = Right idx
-     if st ^. Setup.csPrePost == PreState && MS.testResolved ptr [path] rs
+     if st ^. Setup.csPrePost == PreState && testResolved ptr path rs
        then fail "Multiple points-to preconditions on same pointer"
-       else Setup.csResolvedState %= MS.markResolved ptr [path]
+       else Setup.csResolvedState %= markResolved ptr path
      let env = MS.csAllocations (st ^. Setup.csMethodSpec)
          nameEnv = MS.csTypeNames (st ^. Setup.csMethodSpec)
      Setup.addPointsTo (JVMPointsToElem loc ptr idx val)
