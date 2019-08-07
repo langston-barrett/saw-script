@@ -21,21 +21,20 @@ Stability   : provisional
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ViewPatterns #-}
 
 module SAWScript.Crucible.LLVM.Override
-  ( OverrideMatcher(..)
+  ( OverrideMatcher
   , runOverrideMatcher
 
   , labelWithSimError
 
   , setupValueSub
   , executeFreshPointer
-  , omAsserts
-  , omArgAsserts
   , termSub
 
   , learnCond
@@ -46,6 +45,11 @@ module SAWScript.Crucible.LLVM.Override
   , storePointsToValue
 
   , enableSMTArrayMemoryModel
+
+  -- * Re-exports
+  , OverrideSummary
+  , osAsserts
+  , osArgAsserts
   ) where
 
 import           Control.Lens
@@ -132,15 +136,28 @@ labelWithSimError loc conv lp =
 -- | Retrieve pre-state assertions, ready to be passed to 'Crucible.addAssertion'
 prestateAsserts ::
   W4.ProgramLoc ->
-  OverrideMatcherRW (LLVM arch) ->
+  OverrideSummary (LLVM arch) ->
   [LabeledPred Sym]
-prestateAsserts loc omrw = (omrw ^. omAsserts) ++ labelWithArgNum (omrw ^. omArgAsserts)
+prestateAsserts loc os = (os ^. osAsserts) ++ labelWithArgNum (os ^. osArgAsserts)
   where
     labelWithArgNum asserts =
       foldMap (\(n, as) -> map (helper n) as) (zip [1..] asserts)
       where helper :: Int -> LabeledPred' Sym -> LabeledPred Sym
             helper n = labelWithSimError loc $ \doc -> unlines
               ["In argument #" ++ show n ++ " to crucible_execute_func:", show doc]
+
+-- | Retrieve pre-state assertions, ready to be passed to 'Crucible.addAssertion'
+-- poststateAsserts ::
+--   W4.ProgramLoc ->
+--   OverrideMatcherRW (LLVM arch) ->
+--   [LabeledPred Sym]
+-- poststateAsserts loc omrw = (omrw ^. omAsserts) ++ labelWithArgNum (omrw ^. omArgAsserts)
+--   where
+--     labelWithArgNum asserts =
+--       foldMap (\(n, as) -> map (helper n) as) (zip [1..] asserts)
+--       where helper :: Int -> LabeledPred' Sym -> LabeledPred Sym
+--             helper n = labelWithSimError loc $ \doc -> unlines
+--               ["In argument #" ++ show n ++ " to crucible_execute_func:", show doc]
 
 ------------------------------------------------------------------------
 
@@ -152,7 +169,7 @@ data OverrideWithPreconditions arch =
   OverrideWithPreconditions
     { _owpPreconditions :: [LabeledPred Sym] -- ^ c.f. '_omAsserts'
     , _owpMethodSpec :: MS.CrucibleMethodSpecIR (LLVM arch)
-    , owpState :: OverrideMatcherRW (LLVM arch)
+    , owpSummary :: OverrideSummary (LLVM arch)
     }
   deriving (Generic)
 
@@ -379,12 +396,11 @@ methodSpecHandler opts sc cc top_loc css retTy = do
   -- a method spec.
   prestates <-
     do g0 <- Crucible.readGlobals
-       forM css $ \cs -> liftIO $
+       forM css $ \cs -> liftIO $ do
          let initialFree = Set.fromList (map (termId . ttTerm)
                                            (view (MS.csPreState . MS.csFreshVars) cs))
-          in runOverrideMatcher sym g0 Map.empty Map.empty initialFree (view MS.csLoc cs)
-                      (do methodSpecHandler_prestate opts sc cc args cs
-                          return cs)
+         runOverrideMatcher sym g0 Map.empty Map.empty initialFree (view MS.csLoc cs) $ do
+            methodSpecHandler_prestate opts sc cc args cs >> return cs
 
   -- Print a failure message if all overrides failed to match.  Otherwise, collect
   -- all the override states that might apply, and compute the conjunction of all
@@ -406,8 +422,8 @@ methodSpecHandler opts sc cc top_loc css retTy = do
             PP.<$$> PP.text "Actual function return type: " PP.<>
                       PP.text (show (retTy))
         (_, ss) -> liftIO $
-          forM ss $ \(cs, omrw) ->
-            return (OverrideWithPreconditions (prestateAsserts top_loc omrw) cs omrw)
+          forM ss $ \(cs, summary) ->
+            return (OverrideWithPreconditions (prestateAsserts top_loc summary) cs summary)
 
   -- Now we do a second phase of simple compatibility checking: we check to see
   -- if any of the preconditions of the various overrides are concretely false.
@@ -416,9 +432,9 @@ methodSpecHandler opts sc cc top_loc css retTy = do
 
   -- Collapse the preconditions to a single predicate
   branches' <- liftIO $ forM (true ++ unknown) $
-    \(OverrideWithPreconditions preconds cs omrw) ->
+    \(OverrideWithPreconditions preconds cs summary) ->
       W4.andAllOf sym (folded . W4.labeledPred) preconds <&>
-        \precond -> (precond, cs, omrw)
+        \precond -> (precond, cs, summary)
 
   -- Now use crucible's symbolic branching machinery to select between the branches.
   -- Essentially, we are doing an n-way if statement on the precondition predicates
@@ -445,27 +461,23 @@ methodSpecHandler opts sc cc top_loc css retTy = do
        (Crucible.symbolicBranches Crucible.emptyRegMap $
          [ ( precond
            , do g <- Crucible.readGlobals
-                res <- liftIO $ runOverrideMatcher sym g
-                   (omrw^.setupValueSub)
-                   (omrw^.termSub)
-                   (omrw^.omFree)
-                   top_loc
-                   (methodSpecHandler_poststate opts sc cc retTy cs)
+                res <- liftIO $ (summary ^. osContinuation) g $
+                  methodSpecHandler_poststate opts sc cc retTy cs
                 case res of
                   Left (OF loc rsn)  ->
                     -- TODO, better pretty printing for reasons
                     liftIO $ Crucible.abortExecBecause
                       (Crucible.AssumedFalse (Crucible.AssumptionReason loc (show rsn)))
-                  Right (ret,omrw') ->
-                    do liftIO $ forM_ (omrw'^.omAssumes) $ \asum ->
+                  Right (ret, summary') ->
+                    do liftIO $ forM_ (summary' ^. osAssumes) $ \asum ->
                          Crucible.addAssumption (cc^.ccBackend)
                             (Crucible.LabeledPred asum
                               (Crucible.AssumptionReason top_loc "override postcondition"))
-                       Crucible.writeGlobals (omrw'^.omGlobals)
+                       Crucible.writeGlobals (summary' ^. osGlobals)
                        Crucible.overrideReturn' (Crucible.RegEntry retTy ret)
            , Just (W4.plSourceLoc top_loc)
            )
-         | (precond, cs, omrw) <- branches'
+         | (precond, cs, summary) <- branches'
          ] ++
          [ let fnName = case branches of
                          owp : _  -> owp ^. owpMethodSpec . MS.csMethod . llvmMethodName
@@ -633,7 +645,7 @@ enforceCompleteSubstitution ::
   OverrideMatcher (LLVM arch) md ()
 enforceCompleteSubstitution loc ss =
 
-  do sub <- OM (use termSub)
+  do sub <- use termSub
 
      let -- predicate matches terms that are not covered by the computed
          -- term substitution
@@ -667,7 +679,7 @@ executeCond opts sc cc cs ss = do
   ptrs <- liftIO $ Map.traverseWithKey
             (\k _memty -> executeFreshPointer cc k)
             (ss ^. MS.csFreshPointers)
-  OM (setupValueSub %= Map.union ptrs)
+  setupValueSub %= Map.union ptrs
 
   traverse_ (executeAllocation opts cc) (Map.assocs (ss ^. MS.csAllocs))
   traverse_ (executePointsTo opts sc cc cs) (ss ^. MS.csPointsTos)
@@ -682,7 +694,7 @@ refreshTerms ::
   OverrideMatcher (LLVM arch) md ()
 refreshTerms sc ss =
   do extension <- Map.fromList <$> traverse freshenTerm (view MS.csFreshVars ss)
-     OM (termSub %= Map.union extension)
+     termSub %= Map.union extension
   where
     freshenTerm tt =
       case asExtCns (ttTerm tt) of
@@ -702,7 +714,7 @@ enforceDisjointness ::
   OverrideMatcher (LLVM arch) md ()
 enforceDisjointness loc ss =
   do sym <- Ov.getSymInterface
-     sub <- OM (use setupValueSub)
+     sub <- use setupValueSub
      let (allocsRW, allocsRO) = Map.partition (view isMut) (view MS.csAllocs ss)
          memsRW = Map.elems $ Map.intersectionWith (,) allocsRW sub
          memsRO = Map.elems $ Map.intersectionWith (,) allocsRO sub
@@ -783,7 +795,7 @@ matchPointsTos opts sc cc spec prepost = go False []
 
     checkSetupValue :: SetupValue (Crucible.LLVM arch) -> OverrideMatcher (LLVM arch) md Bool
     checkSetupValue v =
-      do m <- OM (use setupValueSub)
+      do m <- use setupValueSub
          return (all (`Map.member` m) (setupVars v))
 
     -- Compute the set of variable identifiers in a 'SetupValue'
@@ -838,7 +850,7 @@ assignVar ::
   OverrideMatcher (LLVM arch) md ()
 
 assignVar cc loc var val =
-  do old <- OM (setupValueSub . at var <<.= Just val)
+  do old <- setupValueSub . at var <<.= Just val
      for_ old $ \val' ->
        do p <- liftIO (equalValsPred cc (Crucible.ptrToPtrVal val') (Crucible.ptrToPtrVal val))
           addAssert p $ Crucible.SimError loc $ Crucible.AssertFailureSimError $ unlines
@@ -859,9 +871,9 @@ assignTerm ::
   OverrideMatcher (LLVM arch) md (Maybe (LabeledPred' Sym))
 
 assignTerm sc cc prepost var val =
-  do mb <- OM (use (termSub . at var))
+  do mb <- use (termSub . at var)
      case mb of
-       Nothing -> OM (termSub . at var ?= val) >> pure Nothing
+       Nothing -> termSub . at var ?= val >> pure Nothing
        Just old -> matchTerm sc cc prepost val old
 
 --          do t <- liftIO $ scEq sc old val
@@ -1046,7 +1058,7 @@ matchTerm ::
 
 matchTerm _ _ _ real expect | real == expect = return Nothing
 matchTerm sc cc prepost real expect =
-  do free <- OM (use omFree)
+  do free <- use omFree
      case unwrapTermF expect of
        FTermF (ExtCns ec)
          | Set.member (ecVarIndex ec) free ->
@@ -1213,7 +1225,7 @@ learnPred ::
   Term             {- ^ the precondition to learn                  -} ->
   OverrideMatcher (LLVM arch) md (LabeledPred Sym)
 learnPred sc cc loc prepost t =
-  do s <- OM (use termSub)
+  do s <- use termSub
      u <- liftIO $ scInstantiateExt sc s t
      p <- liftIO $ resolveSAWPred cc u
      return $
@@ -1275,7 +1287,7 @@ executeGhost ::
   TypedTerm ->
   OverrideMatcher (LLVM arch) RW ()
 executeGhost sc var val =
-  do s <- OM (use termSub)
+  do s <- use termSub
      t <- liftIO (ttTermLens (scInstantiateExt sc s) val)
      writeGlobal var t
 
@@ -1299,8 +1311,8 @@ executePointsTo opts sc cc spec (LLVMPointsTo _loc ptr val) =
 
      -- In case the types are different (from crucible_points_to_untyped)
      -- then the load type should be determined by the rhs.
-     m <- OM (use setupValueSub)
-     s <- OM (use termSub)
+     m <- use setupValueSub
+     s <- use termSub
      let tyenv = MS.csAllocations spec
      let nameEnv = MS.csTypeNames spec
      val' <- liftIO $ instantiateSetupValue sc s val
@@ -1379,7 +1391,7 @@ executePred ::
   TypedTerm {- ^ the term to assert as a postcondition -} ->
   OverrideMatcher (LLVM arch) md ()
 executePred sc cc tt =
-  do s <- OM (use termSub)
+  do s <- use termSub
      t <- liftIO $ scInstantiateExt sc s (ttTerm tt)
      p <- liftIO $ resolveSAWPred cc t
      addAssume p
@@ -1434,8 +1446,8 @@ resolveSetupValueLLVM ::
   SetupValue (LLVM arch)           ->
   OverrideMatcher (LLVM arch) md (Crucible.MemType, LLVMVal)
 resolveSetupValueLLVM opts cc sc spec sval =
-  do m <- OM (use setupValueSub)
-     s <- OM (use termSub)
+  do m <- use setupValueSub
+     s <- use termSub
      let tyenv = MS.csAllocations spec
          nameEnv = MS.csTypeNames spec
      memTy <- liftIO $ typeOfSetupValue cc tyenv nameEnv sval

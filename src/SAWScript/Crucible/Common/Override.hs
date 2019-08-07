@@ -13,6 +13,7 @@ Stability   : provisional
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -35,7 +36,14 @@ module SAWScript.Crucible.Common.Override
   , OverrideFailure(..)
   , ppOverrideFailure
   --
-  , OverrideMatcher(..)
+  , OverrideSummary
+  , osAsserts
+  , osArgAsserts
+  , osAssumes
+  , osGlobals
+  , osContinuation
+  --
+  , OverrideMatcher
   , runOverrideMatcher
   , RO
   , RW
@@ -87,7 +95,7 @@ import           SAWScript.Crucible.Common (Sym)
 import           SAWScript.Crucible.Common.MethodSpec as MS
 
 --------------------------------------------------------------------------------
--- ** OverrideMatcherRW
+-- ** OverrideMatcherRO
 
 type LabeledPred sym = W4.LabeledPred (W4.Pred sym) Crucible.SimError
 
@@ -103,6 +111,9 @@ data OverrideMatcherRO = OverrideMatcherRO
   }
 
 makeLenses ''OverrideMatcherRO
+
+--------------------------------------------------------------------------------
+-- ** OverrideMatcherRW
 
 -- | The mutable environment during override matching
 data OverrideMatcherRW ext = OverrideMatcherRW
@@ -272,6 +283,57 @@ deriving instance MonadError (OverrideFailure ext) (OverrideMatcher ext rorw)
 deriving instance MonadReader OverrideMatcherRO (OverrideMatcher ext rorw)
 deriving instance MonadState (OverrideMatcherRW ext) (OverrideMatcher ext rorw)
 
+--------------------------------------------------------------------------------
+-- ** OverrideSummary
+
+-- | Summary of what happened during override matching
+data OverrideSummary ext = OverrideSummary
+  { -- | Accumulated assertions
+    _osAsserts :: [LabeledPred Sym]
+
+    -- | Assertions about the values of function arguments
+    --
+    -- These come from @crucible_execute_func@.
+  , _osArgAsserts :: [[W4.LabeledPred (W4.Pred Sym) PP.Doc]]
+
+    -- | Accumulated assumptions
+  , _osAssumes :: [W4.Pred Sym]
+
+    -- | Global variables
+  , _osGlobals :: Crucible.SymGlobalState Sym
+
+    -- | A continuation with which to run do override matching in the resulting
+    --   environment. This is used for return value matching.
+  , _osContinuation ::
+      (forall md a.
+      Crucible.SymGlobalState Sym ->
+      OverrideMatcher ext md a ->
+      IO (Either (OverrideFailure ext) (a, OverrideSummary ext)))
+  }
+
+makeLenses ''OverrideSummary
+
+summaryFromRORW :: OverrideMatcherRO -> OverrideMatcherRW ext -> OverrideSummary ext
+summaryFromRORW omro omrw =
+  OverrideSummary
+    { _osAsserts = _omAsserts omrw
+    , _osArgAsserts = _omArgAsserts omrw
+    , _osAssumes = _omAssumes omrw
+    , _osGlobals = _omGlobals omrw
+    , _osContinuation = \globals m ->
+        runOverrideMatcher
+          (omSymInterface omro)
+          globals
+          (omrw ^. setupValueSub)
+          (omrw ^. termSub)
+          (omrw ^. omFree)
+          (omro ^. omLocation)
+          m
+    }
+
+--------------------------------------------------------------------------------
+-- ** runOverrideMatcher
+
 -- | "Run" function for OverrideMatcher. The final result and state
 -- are returned. The state will contain the updated globals and substitutions
 runOverrideMatcher ::
@@ -282,9 +344,10 @@ runOverrideMatcher ::
    Set VarIndex                {- ^ initial free variables          -} ->
    W4.ProgramLoc               {- ^ override location information   -} ->
    OverrideMatcher ext md a   {- ^ matching action                 -} ->
-   IO (Either (OverrideFailure ext) (a, OverrideMatcherRW ext))
-runOverrideMatcher sym g a t free loc (OM m) =
-  runExceptT (runStateT (runReaderT m initialRO) (initialState g a t free))
+   IO (Either (OverrideFailure ext) (a, OverrideSummary ext))
+runOverrideMatcher sym g a t free loc (OM m) = do
+  result <- runExceptT (runStateT (runReaderT m initialRO) (initialState g a t free))
+  return $ fmap (\(a, omrw) -> (a, summaryFromRORW initialRO omrw)) result
   where initialRO = OverrideMatcherRO loc sym
 
 addAssert ::

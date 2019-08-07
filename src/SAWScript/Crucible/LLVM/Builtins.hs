@@ -873,12 +873,12 @@ verifyPoststate opts sc cc mspec env0 globals ret =
               -- Assert other post-state conditions (equalities, points-to)
               learnCond opts sc cc mspec PostState (mspec ^. MS.csPostState)
 
-     st <- case matchPost of
-             Left err      -> fail (show err)
-             Right (_, st) -> return st
+     summary <- case matchPost of
+             Left err           -> fail (show err)
+             Right (_, summary) -> return summary
 
-     io $ mapM_ (Crucible.addAssertion sym) (st ^. omAsserts)
-     when (not (null (st ^. omArgAsserts))) $ fail "verifyPoststate: impossible"
+     io $ mapM_ (Crucible.addAssertion sym) (summary ^. osAsserts)
+     when (not (null (summary ^. osArgAsserts))) $ fail "verifyPoststate: impossible"
 
      obligations <- io $ Crucible.getProofObligations sym
      io $ Crucible.clearProofObligations sym

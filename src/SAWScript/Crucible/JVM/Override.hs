@@ -27,11 +27,10 @@ Stability   : provisional
 {-# OPTIONS_GHC -Wno-orphans #-} -- Pretty JVMVal
 
 module SAWScript.Crucible.JVM.Override
-  ( OverrideMatcher(..)
+  ( OverrideMatcher
   , runOverrideMatcher
 
   , setupValueSub
-  , omAsserts
   , termSub
 
   , learnCond
@@ -41,6 +40,11 @@ module SAWScript.Crucible.JVM.Override
   , termId
   , injectJVMVal
   , decodeJVMVal
+
+  -- * Re-exports
+  , OverrideSummary
+  , osAsserts
+  , osArgAsserts
   ) where
 
 import           Control.Lens
@@ -199,9 +203,9 @@ methodSpecHandler opts sc cc top_loc css retTy = do
                     PPL.text "All overrides failed during structural matching:" PPL.<$$>
                     PPL.vcat (map (\x -> PPL.text "*" PPL.<> PPL.indent 2 (ppOverrideFailure x)) e)
                 (_, ss) -> liftIO $
-                  forM ss $ \(cs,st) ->
-                    do precond <- W4.andAllOf sym (folded.labeledPred) (st^.omAsserts)
-                       return ( precond, cs, st )
+                  forM ss $ \(cs, summary) ->
+                    do precond <- W4.andAllOf sym (folded.labeledPred) (summary ^. osAsserts)
+                       return ( precond, cs, summary )
 
   -- Now use crucible's symbolic branching machinery to select between the branches.
   -- Essentially, we are doing an n-way if statement on the precondition predicates
@@ -221,27 +225,23 @@ methodSpecHandler opts sc cc top_loc css retTy = do
        (Crucible.symbolicBranches Crucible.emptyRegMap $
          [ ( precond
            , do g <- Crucible.readGlobals
-                res <- liftIO $ runOverrideMatcher sym g
-                   (st^.setupValueSub)
-                   (st^.termSub)
-                   (st^.omFree)
-                   top_loc
-                   (methodSpecHandler_poststate opts sc cc retTy cs)
+                res <- liftIO $ (summary ^. osContinuation) g $
+                  methodSpecHandler_poststate opts sc cc retTy cs
                 case res of
                   Left (OF loc rsn)  ->
                     -- TODO, better pretty printing for reasons
                     liftIO $ Crucible.abortExecBecause
                       (Crucible.AssumedFalse (Crucible.AssumptionReason loc (show rsn)))
-                  Right (ret,st') ->
-                    do liftIO $ forM_ (st'^.omAssumes) $ \asum ->
+                  Right (ret, summary') ->
+                    do liftIO $ forM_ (summary'^.osAssumes) $ \asum ->
                          Crucible.addAssumption (cc ^. jccBackend)
                             (Crucible.LabeledPred asum
                               (Crucible.AssumptionReason top_loc "override postcondition"))
-                       Crucible.writeGlobals (st'^.omGlobals)
+                       Crucible.writeGlobals (summary'^.osGlobals)
                        Crucible.overrideReturn' (Crucible.RegEntry retTy ret)
            , Just (W4.plSourceLoc top_loc)
            )
-         | (precond, cs, st) <- branches
+         | (precond, cs, summary) <- branches
          ] ++
         [
 
@@ -330,7 +330,7 @@ learnCond opts sc cc cs prepost ss =
 enforceCompleteSubstitution :: W4.ProgramLoc -> StateSpec -> OverrideMatcher CJ.JVM w ()
 enforceCompleteSubstitution loc ss =
 
-  do sub <- OM (use termSub)
+  do sub <- use termSub
 
      let -- predicate matches terms that are not covered by the computed
          -- term substitution
@@ -373,7 +373,7 @@ refreshTerms ::
   OverrideMatcher CJ.JVM w ()
 refreshTerms sc ss =
   do extension <- Map.fromList <$> traverse freshenTerm (view MS.csFreshVars ss)
-     OM (termSub %= Map.union extension)
+     termSub %= Map.union extension
   where
     freshenTerm tt =
       case asExtCns (ttTerm tt) of
@@ -389,7 +389,7 @@ enforceDisjointness ::
   JVMCrucibleContext -> W4.ProgramLoc -> StateSpec -> OverrideMatcher CJ.JVM w ()
 enforceDisjointness _cc loc ss =
   do sym <- Ov.getSymInterface
-     sub <- OM (use setupValueSub)
+     sub <- use setupValueSub
      let mems = Map.elems $ Map.intersectionWith (,) (view MS.csAllocs ss) sub
 
      -- Ensure that all regions are disjoint from each other.
@@ -451,7 +451,7 @@ matchPointsTos opts sc cc spec prepost = go False []
 
     checkSetupValue :: SetupValue -> OverrideMatcher CJ.JVM w Bool
     checkSetupValue v =
-      do m <- OM (use setupValueSub)
+      do m <- use setupValueSub
          return (all (`Map.member` m) (setupVars v))
 
     -- Compute the set of variable identifiers in a 'SetupValue'
@@ -517,7 +517,7 @@ assignVar ::
   OverrideMatcher CJ.JVM w ()
 
 assignVar cc loc var ref =
-  do old <- OM (setupValueSub . at var <<.= Just ref)
+  do old <- setupValueSub . at var <<.= Just ref
      let sym = cc ^. jccBackend
      for_ old $ \ref' ->
        do p <- liftIO (CJ.refIsEqual sym ref ref')
@@ -536,9 +536,9 @@ assignTerm ::
   OverrideMatcher CJ.JVM w ()
 
 assignTerm sc cc loc prepost var val =
-  do mb <- OM (use (termSub . at var))
+  do mb <- use (termSub . at var)
      case mb of
-       Nothing -> OM (termSub . at var ?= val)
+       Nothing -> termSub . at var ?= val
        Just old ->
          matchTerm sc cc loc prepost val old
 
@@ -627,7 +627,7 @@ matchTerm ::
 
 matchTerm _ _ _ _ real expect | real == expect = return ()
 matchTerm sc cc loc prepost real expect =
-  do free <- OM (use omFree)
+  do free <- use omFree
      case unwrapTermF expect of
        FTermF (ExtCns ec)
          | Set.member (ecVarIndex ec) free ->
@@ -671,7 +671,7 @@ learnPointsTo opts sc cc spec prepost pt = do
   let tyenv = MS.csAllocations spec
   let nameEnv = MS.csTypeNames spec
   sym <- Ov.getSymInterface
-  globals <- OM (use omGlobals)
+  globals <- use omGlobals
   case pt of
 
     JVMPointsToField loc ptr fname val ->
@@ -726,7 +726,7 @@ learnPred ::
   Term             {- ^ the precondition to learn                  -} ->
   OverrideMatcher CJ.JVM w ()
 learnPred sc cc loc prepost t =
-  do s <- OM (use termSub)
+  do s <- use termSub
      u <- liftIO $ scInstantiateExt sc s t
      p <- liftIO $ resolveBoolTerm (cc ^. jccBackend) u
      addAssert p (Crucible.SimError loc (Crucible.AssertFailureSimError (stateCond prepost)))
@@ -749,12 +749,12 @@ executeAllocation opts cc (var, (loc, alloc)) =
      let jc = cc^.jccJVMContext
      let halloc = cc^.jccHandleAllocator
      sym <- Ov.getSymInterface
-     globals <- OM (use omGlobals)
+     globals <- use omGlobals
      (ptr, globals') <-
        case alloc of
          AllocObject cname -> liftIO $ CJ.doAllocateObject sym halloc jc cname globals
          AllocArray len elemTy -> liftIO $ CJ.doAllocateArray sym halloc jc len elemTy globals
-     OM (omGlobals .= globals')
+     omGlobals .= globals'
      assignVar cc loc var ptr
 
 ------------------------------------------------------------------------
@@ -786,7 +786,7 @@ executePointsTo ::
   OverrideMatcher CJ.JVM w ()
 executePointsTo opts sc cc spec pt = do
   sym <- Ov.getSymInterface
-  globals <- OM (use omGlobals)
+  globals <- use omGlobals
   case pt of
 
     JVMPointsToField loc ptr fname val ->
@@ -795,7 +795,7 @@ executePointsTo opts sc cc spec pt = do
          rval <- asRVal loc ptr'
          let dyn = injectJVMVal sym val'
          globals' <- liftIO $ CJ.doFieldStore sym globals rval fname dyn
-         OM (omGlobals .= globals')
+         omGlobals .= globals'
 
     JVMPointsToElem loc ptr idx val ->
       do (_, val') <- resolveSetupValueJVM opts cc sc spec val
@@ -803,7 +803,7 @@ executePointsTo opts sc cc spec pt = do
          rval <- asRVal loc ptr'
          let dyn = injectJVMVal sym val'
          globals' <- liftIO $ CJ.doArrayStore sym globals rval idx dyn
-         OM (omGlobals .= globals')
+         omGlobals .= globals'
 
 ------------------------------------------------------------------------
 
@@ -832,7 +832,7 @@ executePred ::
   TypedTerm        {- ^ the term to assert as a postcondition -} ->
   OverrideMatcher CJ.JVM w ()
 executePred sc cc tt =
-  do s <- OM (use termSub)
+  do s <- use termSub
      t <- liftIO $ scInstantiateExt sc s (ttTerm tt)
      p <- liftIO $ resolveBoolTerm (cc ^. jccBackend) t
      addAssume p
@@ -870,8 +870,8 @@ resolveSetupValueJVM ::
   SetupValue           ->
   OverrideMatcher CJ.JVM w (J.Type, JVMVal)
 resolveSetupValueJVM opts cc sc spec sval =
-  do m <- OM (use setupValueSub)
-     s <- OM (use termSub)
+  do m <- use setupValueSub
+     s <- use termSub
      let tyenv = MS.csAllocations spec
          nameEnv = MS.csTypeNames spec
      memTy <- liftIO $ typeOfSetupValue cc tyenv nameEnv sval
