@@ -27,6 +27,7 @@ Stability   : provisional
 module SAWScript.Crucible.JVM.Builtins
     ( crucible_jvm_verify
     , crucible_jvm_unsafe_assume_spec
+    , jvm_ghost_value
     , jvm_return
     , jvm_execute_func
     , jvm_postcond
@@ -114,6 +115,7 @@ import qualified SAWScript.Crucible.Common as Common
 import           SAWScript.Crucible.Common (Sym)
 import           SAWScript.Crucible.Common.MethodSpec (AllocIndex(..), nextAllocIndex, PrePost(..))
 
+import           SAWScript.Crucible.Common.Builtins (crucible_ghost_value)
 import qualified SAWScript.Crucible.Common.MethodSpec as MS
 import qualified SAWScript.Crucible.Common.Setup.Type as Setup
 import qualified SAWScript.Crucible.Common.Setup.Builtins as Setup
@@ -918,6 +920,15 @@ jvm_execute_func bic opts args = JVMSetupM $
 
 jvm_return :: BuiltinContext -> Options -> SetupValue -> JVMSetupM ()
 jvm_return bic opts retVal = JVMSetupM $ Setup.crucible_return bic opts retVal
+
+jvm_ghost_value ::
+  BuiltinContext                      ->
+  Options                             ->
+  MS.GhostGlobal                      ->
+  TypedTerm                           ->
+  JVMSetupM ()
+jvm_ghost_value _bic _opt ghost val = JVMSetupM $
+  crucible_ghost_value ghost val
 
 --------------------------------------------------------------------------------
 

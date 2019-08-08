@@ -35,8 +35,7 @@ module SAWScript.Crucible.LLVM.Builtins
     , crucible_setup_val_to_typed_term
     , crucible_spec_size
     , crucible_spec_solvers
-    , crucible_ghost_value
-    , crucible_declare_ghost_state
+    , crucible_llvm_ghost_value
     , crucible_equal
     , crucible_points_to
     , crucible_fresh_pointer
@@ -141,6 +140,7 @@ import SAWScript.Options
 
 import qualified SAWScript.Crucible.Common as Common
 import           SAWScript.Crucible.Common (Sym)
+import           SAWScript.Crucible.Common.Builtins
 import           SAWScript.Crucible.Common.MethodSpec (AllocIndex(..), nextAllocIndex, PrePost(..))
 import qualified SAWScript.Crucible.Common.MethodSpec as MS
 import           SAWScript.Crucible.Common.MethodSpec (SetupValue(..))
@@ -1516,25 +1516,14 @@ crucible_equal _bic _opt (getAllLLVM -> val1) (getAllLLVM -> val2) = LLVMCrucibl
      loc <- getW4Position "crucible_equal"
      Setup.addCondition (MS.SetupCond_Equal loc val1 val2)
 
-crucible_declare_ghost_state ::
-  BuiltinContext ->
-  Options        ->
-  String         ->
-  TopLevel Value
-crucible_declare_ghost_state _bic _opt name =
-  do allocator <- getHandleAlloc
-     global <- liftIO (Crucible.freshGlobalVar allocator (Text.pack name) knownRepr)
-     return (VGhostVar global)
-
-crucible_ghost_value ::
+crucible_llvm_ghost_value ::
   BuiltinContext                      ->
   Options                             ->
   MS.GhostGlobal                      ->
   TypedTerm                           ->
   LLVMCrucibleSetupM ()
-crucible_ghost_value _bic _opt ghost val = LLVMCrucibleSetupM $
-  do loc <- getW4Position "crucible_ghost_value"
-     Setup.addGhostCondition (MS.GhostCondition loc ghost val)
+crucible_llvm_ghost_value _bic _opt ghost val = LLVMCrucibleSetupM $
+  crucible_ghost_value ghost val
 
 crucible_spec_solvers :: SomeLLVM (MS.CrucibleMethodSpecIR) -> [String]
 crucible_spec_solvers (SomeLLVM mir) =
