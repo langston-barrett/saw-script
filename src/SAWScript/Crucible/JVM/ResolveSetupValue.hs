@@ -19,7 +19,6 @@ module SAWScript.Crucible.JVM.ResolveSetupValue
   , typeOfSetupValue
   , resolveTypedTerm
   , resolveBoolTerm
-  , resolveSAWPred
   -- , resolveSetupFieldIndex
   , equalValsPred
   ) where
@@ -158,13 +157,6 @@ resolveTypedTerm cc tm =
     Cryptol.Forall [] [] ty ->
       resolveSAWTerm cc (Cryptol.evalValType Map.empty ty) (ttTerm tm)
     _ -> fail "resolveSetupVal: expected monomorphic term"
-
-resolveSAWPred ::
-  JVMCrucibleContext ->
-  Term ->
-  IO (W4.Pred Sym)
-resolveSAWPred cc tm =
-  Crucible.bindSAWTerm (cc^.jccBackend) W4.BaseBoolRepr tm
 
 resolveSAWTerm ::
   JVMCrucibleContext ->

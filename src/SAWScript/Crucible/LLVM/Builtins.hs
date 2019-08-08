@@ -470,11 +470,11 @@ verifyPrestate opts cc mspec globals = do
 
   mem'' <- setupPrePointsTos mspec opts cc env (mspec ^. MS.csPreState . MS.csPointsTos) mem'
   let globals1 = Crucible.insertGlobal lvar mem'' globals
-  (globals2,cs) <- setupPrestateConditions mspec cc env globals1 (mspec ^. MS.csPreState . MS.csConditions)
+  cs <- setupPrestateConditions mspec cc env (mspec ^. MS.csPreState . MS.csConditions)
   args <- resolveArguments cc mspec env
   -- TODO: something about ghost variables
 
-  return (args, cs, env, globals2)
+  return (args, cs, env, globals1)
 
 -- | Check two MemTypes for register compatiblity.  This is a stricter
 --   check than the memory compatiblity check that is done for points-to
@@ -559,7 +559,7 @@ setupPrestateConditions ::
   LLVMCrucibleContext arch        ->
   Map AllocIndex (LLVMPtr (Crucible.ArchWidth arch)) ->
   [MS.SetupCondition (LLVM arch)]            ->
-  IO (Crucible.SymGlobalState Sym, [Crucible.LabeledPred Term Crucible.AssumptionReason])
+  IO [Crucible.LabeledPred Term Crucible.AssumptionReason]
 setupPrestateConditions mspec cc env = aux []
   where
     tyenv   = MS.csAllocations mspec
@@ -868,6 +868,7 @@ verifyPoststate opts sc cc mspec env0 globals ret =
 
               -- Assert other post-state conditions (equalities, points-to)
               learnCond opts sc cc mspec PostState (mspec ^. MS.csPostState)
+              -- TODO: something about ghost variables
 
      st <- case matchPost of
              Left err      -> fail (show err)

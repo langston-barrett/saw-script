@@ -116,9 +116,6 @@ import           SAWScript.Utils (bullets, handleException)
 
 ------------------------------------------------------------------------
 
-type LabeledPred' sym = W4.LabeledPred (W4.Pred sym) PP.Doc
-type LabeledPred sym = W4.LabeledPred (W4.Pred sym) Crucible.SimError
-
 -- | Convert a predicate with a 'PP.Doc' label to one with a 'Crucible.SimError'
 labelWithSimError ::
   W4.ProgramLoc ->
@@ -850,28 +847,6 @@ assignVar cc loc var val =
 ------------------------------------------------------------------------
 
 
-assignTerm ::
-  SharedContext      {- ^ context for constructing SAW terms    -} ->
-  LLVMCrucibleContext arch   {- ^ context for interacting with Crucible -} ->
-  PrePost                                                          ->
-  VarIndex {- ^ external constant index -} ->
-  Term     {- ^ value                   -} ->
-  OverrideMatcher (LLVM arch) md (Maybe (LabeledPred' Sym))
-
-assignTerm sc cc prepost var val =
-  do mb <- OM (use (termSub . at var))
-     case mb of
-       Nothing -> OM (termSub . at var ?= val) >> pure Nothing
-       Just old -> matchTerm sc cc prepost val old
-
---          do t <- liftIO $ scEq sc old val
---             p <- liftIO $ resolveSAWPred cc t
---             addAssert p (Crucible.AssertFailureSimError ("literal equality " ++ stateCond prepost))
-
-
-------------------------------------------------------------------------
-
-
 -- | Match the value of a function argument with a symbolic 'SetupValue'.
 matchArg ::
   Options          {- ^ saw script print out opts -} ->
@@ -895,7 +870,7 @@ matchArg opts sc cc cs prepost actual expectedTy expected =
               failMsg  <- mkStructuralMismatch opts cc sc cs actual expected expectedTy
               realTerm <- valueToSC sym (cs ^. MS.csLoc) failMsg tval actual
               maybeToList <$>
-                matchTerm sc cc prepost realTerm (ttTerm expectedTT)
+                matchTerm sc (cc^.ccBackend) prepost realTerm (ttTerm expectedTT)
 
     -- match the fields of struct point-wise
     (Crucible.LLVMValStruct xs, Crucible.StructType fields, SetupStruct () _ zs) ->
@@ -1036,37 +1011,6 @@ typeToSC sc t =
 
 ------------------------------------------------------------------------
 
-matchTerm ::
-  SharedContext   {- ^ context for constructing SAW terms    -} ->
-  LLVMCrucibleContext arch {- ^ context for interacting with Crucible -} ->
-  PrePost                                                       ->
-  Term            {- ^ exported concrete term                -} ->
-  Term            {- ^ expected specification term           -} ->
-  OverrideMatcher (LLVM arch) md (Maybe (LabeledPred' Sym))
-
-matchTerm _ _ _ real expect | real == expect = return Nothing
-matchTerm sc cc prepost real expect =
-  do free <- OM (use osFree)
-     case unwrapTermF expect of
-       FTermF (ExtCns ec)
-         | Set.member (ecVarIndex ec) free ->
-         do assignTerm sc cc prepost (ecVarIndex ec) real
-
-       _ ->
-         do t <- liftIO $ scEq sc real expect
-            p <- liftIO $ resolveSAWPred cc t
-            return $ Just $ W4.LabeledPred p $ PP.vcat $ map PP.text
-              [ "Literal equality " ++ stateCond prepost
-              , "Expected term: " ++ prettyTerm expect
-              , "Actual term:   " ++ prettyTerm real
-              ]
-  where prettyTerm term =
-          let pretty_ = show (ppTerm defaultPPOpts term)
-          in if length pretty_ < 200 then pretty_ else "<term omitted due to size>"
-
-
-------------------------------------------------------------------------
-
 -- | Use the current state to learn about variable assignments based on
 -- preconditions for a procedure specification.
 learnSetupCondition ::
@@ -1080,45 +1024,6 @@ learnSetupCondition ::
   OverrideMatcher (LLVM arch) md (Maybe (LabeledPred Sym))
 learnSetupCondition opts sc cc spec prepost (MS.SetupCond_Equal loc val1 val2)  = Just <$> learnEqual opts sc cc spec loc prepost val1 val2
 learnSetupCondition _opts sc cc _    prepost (MS.SetupCond_Pred loc tm)         = Just <$> learnPred sc cc loc prepost (ttTerm tm)
-
-
-------------------------------------------------------------------------
-
--- TODO(lb): make this language-independent!
-learnGhost ::
-  SharedContext                                          ->
-  LLVMCrucibleContext arch                                  ->
-  W4.ProgramLoc                                          ->
-  PrePost                                                ->
-  MS.GhostGlobal                                            ->
-  TypedTerm                                              ->
-  OverrideMatcher (LLVM arch) md (Maybe (LabeledPred Sym))
-learnGhost sc cc loc prepost var expected =
-  do actual <- readGlobal var
-     maybeAssert <-  matchTerm sc cc prepost (ttTerm actual) (ttTerm expected)
-     pure $ fmap (labelWithSimError loc show) maybeAssert
-
--- | Enforce a pre- or post- condition on a ghost variable
---
--- This has symmetric behavior between pre- and post-conditions in verification
--- and override application:
---
--- Verification:
--- * Precondition: Insert the value of the variable into the global state
--- * Postcondition: Match the value against what's in the global state
---
--- Override:
--- * Precondition: Match the value against what's in the global state
--- * Postcondition: Insert the new value into the global state
-matchGhost ::
-  SharedContext                                          ->
-  LLVMCrucibleContext arch                                  ->
-  W4.ProgramLoc                                          ->
-  PrePost                                                ->
-  MS.GhostGlobal                                            ->
-  TypedTerm                                              ->
-  OverrideMatcher (LLVM arch) md (Maybe (LabeledPred Sym))
-matchGhost sc cc loc prepost var expected = _
 
 ------------------------------------------------------------------------
 
@@ -1199,10 +1104,6 @@ learnPointsTo opts sc cc spec prepost (LLVMPointsTo loc ptr val) =
 
 ------------------------------------------------------------------------
 
-stateCond :: PrePost -> String
-stateCond PreState = "precondition"
-stateCond PostState = "postcondition"
-
 -- | Process a "crucible_equal" statement from the precondition
 -- section of the CrucibleSetup block.
 learnEqual ::
@@ -1236,7 +1137,7 @@ learnPred ::
 learnPred sc cc loc prepost t =
   do s <- OM (use termSub)
      u <- liftIO $ scInstantiateExt sc s t
-     p <- liftIO $ resolveSAWPred cc u
+     p <- liftIO $ resolveSAWPred (cc ^. ccBackend) u
      return $
        W4.LabeledPred p (Crucible.SimError loc (Crucible.AssertFailureSimError (stateCond prepost)))
 
@@ -1285,19 +1186,6 @@ executeSetupCondition opts sc cc spec =
     MS.SetupCond_Equal _loc val1 val2 ->
       executeEqual opts sc cc spec val1 val2
     MS.SetupCond_Pred _loc tm -> executePred sc cc tm
-
-------------------------------------------------------------------------
-
--- TODO(lb): make this language independent!
-executeGhost ::
-  SharedContext ->
-  MS.GhostGlobal ->
-  TypedTerm ->
-  OverrideMatcher (LLVM arch) RW ()
-executeGhost sc var val =
-  do s <- OM (use termSub)
-     t <- liftIO (ttTermLens (scInstantiateExt sc s) val)
-     writeGlobal var t
 
 ------------------------------------------------------------------------
 
@@ -1401,7 +1289,7 @@ executePred ::
 executePred sc cc tt =
   do s <- OM (use termSub)
      t <- liftIO $ scInstantiateExt sc s (ttTerm tt)
-     p <- liftIO $ resolveSAWPred cc t
+     p <- liftIO $ resolveSAWPred (cc ^. ccBackend) t
      addAssume p
 
 ------------------------------------------------------------------------

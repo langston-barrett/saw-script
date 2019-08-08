@@ -21,6 +21,8 @@ Stability   : provisional
 module SAWScript.Crucible.Common.Override
   ( Pointer
   , OverrideState(..)
+  , LabeledPred
+  , LabeledPred'
   , osAsserts
   , osArgAsserts
   , osAssumes
@@ -48,6 +50,10 @@ module SAWScript.Crucible.Common.Override
   , getSymInterface
   --
   , assignmentToList
+  --
+  , stateCond
+  , matchTerm
+  , resolveSAWPred
   ) where
 
 import qualified Control.Exception as X
@@ -62,6 +68,7 @@ import           Control.Monad.IO.Class
 import           Data.Kind (Type)
 import           Data.Map (Map)
 import           Data.Set (Set)
+import qualified Data.Set as Set
 import           Data.Typeable (Typeable)
 import           GHC.Generics (Generic, Generic1)
 import qualified Text.PrettyPrint.ANSI.Leijen as PP
@@ -70,10 +77,17 @@ import qualified Data.Parameterized.Context as Ctx
 import           Data.Parameterized.Some (Some)
 import           Data.Parameterized.TraversableFC (toListFC)
 
-import           Verifier.SAW.SharedTerm as SAWVerifier
-import           Verifier.SAW.TypedTerm as SAWVerifier
+import qualified Verifier.SAW.SharedTerm as SAWVerifier
+import           Verifier.SAW.SharedTerm (Term, SharedContext)
+import qualified Verifier.SAW.TypedTerm as SAWVerifier
+import           Verifier.SAW.TypedTerm (TypedTerm)
+import qualified Verifier.SAW.Term.Functor as SAWVerifier
+import           Verifier.SAW.Term.Functor (TermF(..), ExtCns(..), VarIndex)
+import           Verifier.SAW.Term.Functor (FlatTermF(ExtCns))
+import           Verifier.SAW.Prelude (scEq)
 
 import qualified Lang.Crucible.CFG.Core as Crucible (TypeRepr, GlobalVar)
+import qualified Lang.Crucible.Backend.SAWCore as CrucibleSAW
 import qualified Lang.Crucible.Simulator.GlobalState as Crucible
 import qualified Lang.Crucible.Simulator.RegMap as Crucible
 import qualified Lang.Crucible.Simulator.SimError as Crucible
@@ -89,6 +103,7 @@ import           SAWScript.Crucible.Common.MethodSpec as MS
 -- ** OverrideState
 
 type LabeledPred sym = W4.LabeledPred (W4.Pred sym) Crucible.SimError
+type LabeledPred' sym = W4.LabeledPred (W4.Pred sym) PP.Doc
 
 type family Pointer ext :: Type
 
@@ -108,7 +123,7 @@ data OverrideState ext = OverrideState
     -- | Assertions about the values of function arguments
     --
     -- These come from @crucible_execute_func@.
-  , _osArgAsserts :: [[W4.LabeledPred (W4.Pred Sym) PP.Doc]]
+  , _osArgAsserts :: [[LabeledPred' Sym]]
 
     -- | Accumulated assumptions
   , _osAssumes :: [W4.Pred Sym]
@@ -191,8 +206,8 @@ ppOverrideFailureReason rsn = case rsn of
     (PP.indent 2 $ PP.vcat (map MS.ppTypedTerm vs))
   BadTermMatch x y ->
     PP.text "terms do not match" PP.<$$>
-    (PP.indent 2 (ppTerm defaultPPOpts x)) PP.<$$>
-    (PP.indent 2 (ppTerm defaultPPOpts y))
+    (PP.indent 2 (SAWVerifier.ppTerm SAWVerifier.defaultPPOpts x)) PP.<$$>
+    (PP.indent 2 (SAWVerifier.ppTerm SAWVerifier.defaultPPOpts y))
   BadPointerCast ->
     PP.text "bad pointer cast"
   BadReturnSpecification ty -> PP.vcat $ map PP.text $
@@ -325,3 +340,129 @@ assignmentToList ::
   Ctx.Assignment (Crucible.RegEntry sym) ctx ->
   [Crucible.AnyValue sym]
 assignmentToList = toListFC (\(Crucible.RegEntry x y) -> Crucible.AnyValue x y)
+
+------------------------------------------------------------------------
+-- ** Operations
+
+-- TODO: Move the above to a module "monad", and below to a module "operations"
+
+stateCond :: PrePost -> String
+stateCond PreState = "precondition"
+stateCond PostState = "postcondition"
+
+resolveSAWPred :: Sym -> Term -> IO (W4.Pred Sym)
+resolveSAWPred sym tm = CrucibleSAW.bindSAWTerm sym W4.BaseBoolRepr tm
+
+assignTerm ::
+  SharedContext      {- ^ context for constructing SAW terms    -} ->
+  Sym                                                              ->
+  PrePost                                                          ->
+  VarIndex {- ^ external constant index -} ->
+  Term     {- ^ value                   -} ->
+  OverrideMatcher env md (Maybe (LabeledPred' Sym))
+
+assignTerm sc cc prepost var val =
+  do mb <- OM (use (termSub . at var))
+     case mb of
+       Nothing -> OM (termSub . at var ?= val) >> pure Nothing
+       Just old -> matchTerm sc cc prepost val old
+
+  
+matchTerm ::
+  SharedContext   {- ^ context for constructing SAW terms    -} ->
+  Sym                                                           ->
+  PrePost                                                       ->
+  Term            {- ^ exported concrete term                -} ->
+  Term            {- ^ expected specification term           -} ->
+  OverrideMatcher ext md (Maybe (LabeledPred' Sym))
+matchTerm _ _ _ real expect | real == expect = return Nothing
+matchTerm sc sym prepost real expect =
+  do free <- OM (use osFree)
+     case SAWVerifier.unwrapTermF expect of
+       FTermF (ExtCns ec)
+         | Set.member (ecVarIndex ec) free ->
+         do assignTerm sc sym prepost (ecVarIndex ec) real
+
+       _ ->
+         do t <- liftIO $ scEq sc real expect
+            p <- liftIO $ resolveSAWPred sym t
+            return $ Just $ W4.LabeledPred p $ PP.vcat $ map PP.text
+              [ "Literal equality " ++ stateCond prepost
+              , "Expected term: " ++ prettyTerm expect
+              , "Actual term:   " ++ prettyTerm real
+              ]
+  where prettyTerm term =
+          let pretty_ = show (SAWVerifier.ppTerm SAWVerifier.defaultPPOpts term)
+          in if length pretty_ < 200 then pretty_ else "<term omitted due to size>"
+
+------------------------------------------------------------------------
+-- ** Ghost state
+
+-- Enforcing a pre- or post- conditions on ghost variables
+--
+-- This has symmetric behavior between pre- and post-conditions in verification
+-- and override application:
+--
+-- Verification:
+-- * Precondition: Insert the value of the variable into the global state
+-- * Postcondition: Match the value against what's in the global state
+--
+-- Override:
+-- * Precondition: Match the value against what's in the global state
+-- * Postcondition: Insert the new value into the global state
+
+matchGhost ::
+  SharedContext             ->
+  Sym                         ->
+  Crucible.SymGlobalState Sym ->
+  W4.ProgramLoc             ->
+  PrePost                   ->
+  MS.GhostGlobal            ->
+  TypedTerm                 ->
+  OverrideMatcher ext md (Maybe (LabeledPred' Sym))
+matchGhost sc sym globalState loc prepost ghostVar expected =
+  case Crucible.lookupGlobal ghostVar globalState of
+    Nothing -> fail $ "Couldn't find ghost global: " ++ show ghostVar
+    Just actual ->
+      matchTerm sc sym prepost undefined (SAWVerifier.ttTerm expected)
+
+
+writeGhost ::
+  SharedContext             ->
+  Sym                       ->
+  W4.ProgramLoc             ->
+  MS.GhostGlobal            ->
+  TypedTerm                 ->
+  IO ()
+writeGhost sc cc loc var expected = undefined
+
+
+-- ------------------------------------------------------------------------
+
+-- -- TODO(lb): make this language-independent!
+-- learnGhost ::
+--   SharedContext                                          ->
+--   LLVMCrucibleContext arch                                  ->
+--   W4.ProgramLoc                                          ->
+--   PrePost                                                ->
+--   MS.GhostGlobal                                            ->
+--   TypedTerm                                              ->
+--   OverrideMatcher (LLVM arch) md (Maybe (LabeledPred Sym))
+-- learnGhost sc cc loc prepost var expected =
+--   do actual <- readGlobal var
+--      maybeAssert <-  matchTerm sc cc prepost (ttTerm actual) (ttTerm expected)
+--      pure $ fmap (labelWithSimError loc show) maybeAssert
+
+-- TODO(lb): make this language independent!
+-- executeGhost ::
+--   SharedContext ->
+--   MS.GhostGlobal ->
+--   TypedTerm ->
+--   OverrideMatcher (LLVM arch) RW ()
+-- executeGhost sc var val =
+--   do s <- OM (use termSub)
+--      t <- liftIO (ttTermLens (scInstantiateExt sc s) val)
+--      writeGlobal var t
+
+-- aux acc globals (MS.SetupCond_Ghost () _loc var val : xs) =
+--   aux acc (Crucible.insertGlobal var val globals) xs
