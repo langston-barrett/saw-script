@@ -322,6 +322,7 @@ learnCond opts sc cc cs prepost ss =
      traverse_ (learnSetupCondition opts sc cc cs prepost) (ss ^. MS.csConditions)
      enforceDisjointness cc loc ss
      enforceCompleteSubstitution loc ss
+     -- TODO: something about ghost variables
 
 
 -- | Verify that all of the fresh variables for the given
@@ -363,6 +364,7 @@ executeCond opts sc cc cs ss =
      traverse_ (executeAllocation opts cc) (Map.assocs (ss ^. MS.csAllocs))
      traverse_ (executePointsTo opts sc cc cs) (ss ^. MS.csPointsTos)
      traverse_ (executeSetupCondition opts sc cc cs) (ss ^. MS.csConditions)
+     -- TODO: something about ghost variables
 
 
 -- | Allocate fresh variables for all of the "fresh" vars
