@@ -622,6 +622,7 @@ learnCond opts sc cc cs prepost ss = do
   -- TODO: something about ghost globals
 
 
+
 -- | Verify that all of the fresh variables for the given
 -- state spec have been "learned". If not, throws
 -- 'AmbiguousVars' exception.
@@ -1096,6 +1097,28 @@ learnGhost sc cc loc prepost var expected =
   do actual <- readGlobal var
      maybeAssert <-  matchTerm sc cc prepost (ttTerm actual) (ttTerm expected)
      pure $ fmap (labelWithSimError loc show) maybeAssert
+
+-- | Enforce a pre- or post- condition on a ghost variable
+--
+-- This has symmetric behavior between pre- and post-conditions in verification
+-- and override application:
+--
+-- Verification:
+-- * Precondition: Insert the value of the variable into the global state
+-- * Postcondition: Match the value against what's in the global state
+--
+-- Override:
+-- * Precondition: Match the value against what's in the global state
+-- * Postcondition: Insert the new value into the global state
+matchGhost ::
+  SharedContext                                          ->
+  LLVMCrucibleContext arch                                  ->
+  W4.ProgramLoc                                          ->
+  PrePost                                                ->
+  MS.GhostGlobal                                            ->
+  TypedTerm                                              ->
+  OverrideMatcher (LLVM arch) md (Maybe (LabeledPred Sym))
+matchGhost sc cc loc prepost var expected = _
 
 ------------------------------------------------------------------------
 

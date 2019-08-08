@@ -552,14 +552,12 @@ setupPrePointsTos mspec opts cc env pts mem0 = foldM go mem0 pts
 
          storePointsToValue opts cc env tyenv nameEnv mem ptr'' val
 
--- | Sets up globals (ghost variable), and collects boolean terms
--- that should be assumed to be true.
+-- | Collects boolean terms that should be assumed to be true.
 setupPrestateConditions ::
   (?lc :: Crucible.TypeContext, Crucible.HasPtrWidth (Crucible.ArchWidth arch)) =>
   MS.CrucibleMethodSpecIR (LLVM arch)        ->
   LLVMCrucibleContext arch        ->
   Map AllocIndex (LLVMPtr (Crucible.ArchWidth arch)) ->
-  Crucible.SymGlobalState Sym ->
   [MS.SetupCondition (LLVM arch)]            ->
   IO (Crucible.SymGlobalState Sym, [Crucible.LabeledPred Term Crucible.AssumptionReason])
 setupPrestateConditions mspec cc env = aux []
@@ -567,18 +565,18 @@ setupPrestateConditions mspec cc env = aux []
     tyenv   = MS.csAllocations mspec
     nameEnv = mspec ^. MS.csPreState . MS.csVarTypeNames
 
-    aux acc globals [] = return (globals, acc)
+    aux acc [] = return acc
 
-    aux acc globals (MS.SetupCond_Equal loc val1 val2 : xs) =
+    aux acc (MS.SetupCond_Equal loc val1 val2 : xs) =
       do val1' <- resolveSetupVal cc env tyenv nameEnv val1
          val2' <- resolveSetupVal cc env tyenv nameEnv val2
          t     <- assertEqualVals cc val1' val2'
          let lp = Crucible.LabeledPred t (Crucible.AssumptionReason loc "equality precondition")
-         aux (lp:acc) globals xs
+         aux (lp:acc) xs
 
-    aux acc globals (MS.SetupCond_Pred loc tm : xs) =
+    aux acc (MS.SetupCond_Pred loc tm : xs) =
       let lp = Crucible.LabeledPred (ttTerm tm) (Crucible.AssumptionReason loc "precondition") in
-      aux (lp:acc) globals xs
+      aux (lp:acc) xs
 
 --------------------------------------------------------------------------------
 

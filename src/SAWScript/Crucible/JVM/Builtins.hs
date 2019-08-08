@@ -328,6 +328,7 @@ verifyPrestate cc mspec globals0 =
      globals2 <- setupPrePointsTos mspec cc env (mspec ^. MS.csPreState . MS.csPointsTos) globals1
      cs <- setupPrestateConditions mspec cc env (mspec ^. MS.csPreState . MS.csConditions)
      args <- resolveArguments cc mspec env
+     -- TODO: something about ghost variables
 
      -- Check the type of the return setup value
      case (mspec ^. MS.csRetValue, mspec ^. MS.csRet) of
