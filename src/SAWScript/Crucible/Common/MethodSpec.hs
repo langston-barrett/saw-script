@@ -304,11 +304,8 @@ type family PointsTo ext :: Type
 data SetupCondition ext where
   SetupCond_Equal    :: ProgramLoc -> SetupValue ext -> SetupValue ext -> SetupCondition ext
   SetupCond_Pred     :: ProgramLoc -> TypedTerm -> SetupCondition ext
-  SetupCond_Ghost    :: B (HasGhostState ext) ->
-                        ProgramLoc ->
-                        GhostGlobal ->
-                        TypedTerm ->
-                        SetupCondition ext
+
+data GhostCondition = GhostCondition ProgramLoc GhostGlobal TypedTerm
 
 deriving instance ( SetupValueHas Show ext
                   , Show (B (HasGhostState ext))
@@ -323,7 +320,9 @@ data StateSpec ext = StateSpec
   , _csPointsTos     :: [PointsTo ext]
     -- ^ points-to statements
   , _csConditions    :: [SetupCondition ext]
-    -- ^ equality, propositions, and ghost-variable conditions
+    -- ^ equality conditions and propositions
+  , _csGhostConditions :: [GhostCondition]
+    -- ^ conditions about values of ghost variables
   , _csFreshVars     :: [TypedTerm]
     -- ^ fresh variables created in this state
   , _csVarTypeNames  :: Map AllocIndex (TypeName ext)
@@ -334,12 +333,13 @@ makeLenses ''StateSpec
 
 initialStateSpec :: StateSpec ext
 initialStateSpec =  StateSpec
-  { _csAllocs        = Map.empty
-  , _csFreshPointers = Map.empty -- TODO: this is LLVM-specific
-  , _csPointsTos     = []
-  , _csConditions    = []
-  , _csFreshVars     = []
-  , _csVarTypeNames  = Map.empty
+  { _csAllocs          = Map.empty
+  , _csFreshPointers   = Map.empty -- TODO: this is LLVM-specific
+  , _csPointsTos       = []
+  , _csConditions      = []
+  , _csGhostConditions = []
+  , _csFreshVars       = []
+  , _csVarTypeNames    = Map.empty
   }
 
 --------------------------------------------------------------------------------

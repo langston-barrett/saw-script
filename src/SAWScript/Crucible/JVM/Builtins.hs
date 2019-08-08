@@ -53,7 +53,6 @@ import           Data.Set (Set)
 import qualified Data.Set as Set
 import qualified Data.Sequence as Seq
 import qualified Data.Vector as V
-import           Data.Void (absurd)
 import           System.IO
 
 import           Text.PrettyPrint.ANSI.Leijen hiding ((<$>), (<>))
@@ -463,8 +462,6 @@ setupPrestateConditions mspec cc env = aux []
     aux acc (MS.SetupCond_Pred loc tm : xs) =
       let lp = Crucible.LabeledPred (ttTerm tm) (Crucible.AssumptionReason loc "precondition") in
       aux (lp:acc) xs
-
-    aux _ (MS.SetupCond_Ghost empty_ _ _ _ : _) = absurd empty_
 
 --------------------------------------------------------------------------------
 

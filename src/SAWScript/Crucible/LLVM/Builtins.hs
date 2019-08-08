@@ -472,6 +472,7 @@ verifyPrestate opts cc mspec globals = do
   let globals1 = Crucible.insertGlobal lvar mem'' globals
   (globals2,cs) <- setupPrestateConditions mspec cc env globals1 (mspec ^. MS.csPreState . MS.csConditions)
   args <- resolveArguments cc mspec env
+  -- TODO: something about ghost variables
 
   return (args, cs, env, globals2)
 
@@ -578,9 +579,6 @@ setupPrestateConditions mspec cc env = aux []
     aux acc globals (MS.SetupCond_Pred loc tm : xs) =
       let lp = Crucible.LabeledPred (ttTerm tm) (Crucible.AssumptionReason loc "precondition") in
       aux (lp:acc) globals xs
-
-    aux acc globals (MS.SetupCond_Ghost () _loc var val : xs) =
-      aux acc (Crucible.insertGlobal var val globals) xs
 
 --------------------------------------------------------------------------------
 
@@ -1531,12 +1529,12 @@ crucible_declare_ghost_state _bic _opt name =
 crucible_ghost_value ::
   BuiltinContext                      ->
   Options                             ->
-  MS.GhostGlobal                         ->
+  MS.GhostGlobal                      ->
   TypedTerm                           ->
   LLVMCrucibleSetupM ()
 crucible_ghost_value _bic _opt ghost val = LLVMCrucibleSetupM $
   do loc <- getW4Position "crucible_ghost_value"
-     Setup.addCondition (MS.SetupCond_Ghost () loc ghost val)
+     Setup.addGhostCondition (MS.GhostCondition loc ghost val)
 
 crucible_spec_solvers :: SomeLLVM (MS.CrucibleMethodSpecIR) -> [String]
 crucible_spec_solvers (SomeLLVM mir) =
