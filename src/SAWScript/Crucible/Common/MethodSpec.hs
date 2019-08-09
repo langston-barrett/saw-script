@@ -23,11 +23,14 @@ Grow\", and is prevalent across the Crucible codebase.
 
 module SAWScript.Crucible.Common.MethodSpec where
 
+import           Data.Coerce (coerce)
 import           Data.Constraint (Constraint)
 import           Data.List (isPrefixOf)
+import           Data.Traversable (for)
 import           Data.Map (Map)
 import qualified Data.Map as Map
 import           Data.Void (Void)
+import           Control.Applicative (liftA2)
 import           Control.Monad.Trans.Maybe
 import           Control.Monad.Trans (lift)
 import           Control.Lens
@@ -369,20 +372,53 @@ data CrucibleMethodSpecIR ext =
 
 makeLenses ''CrucibleMethodSpecIR
 
+-- | Pretty-print a method spec, optionally with custom printing for 'SetupValue'
+ppMethodSpecA ::
+  ( PP.Pretty (MethodId ext)
+  , PP.Pretty (ExtType ext)
+  , Applicative f
+  ) =>
+  (SetupValue ext -> Maybe (f PP.Doc)) {-^ How to print the args and return -} ->
+  CrucibleMethodSpecIR ext ->
+  f PP.Doc
+ppMethodSpecA prettyVal methodSpec =
+  let 
+      ret =
+        let retTy = maybe (PP.text "<void>") PP.pretty (methodSpec ^. csRet)
+            justType = PP.text "Return type: " <> retTy
+        in
+          case prettyVal =<< (methodSpec ^. csRetValue) of
+            Nothing -> pure justType
+            Just valueDoc ->
+              (justType PP.<$$>) . (PP.text "Returned value:" PP.<+>) <$> valueDoc
+      args =
+        for (zip [1..] $ map PP.pretty (methodSpec ^. csArgs)) $ \(n, arg) ->
+          fmap (PP.text ("Argument " ++ show n ++ ":") PP.<$$>) $
+            case prettyVal . snd =<< Map.lookup n (methodSpec ^. csArgBindings) of
+              Nothing -> pure $ PP.text "Type:" PP.<+> arg
+              Just valueDoc -> 
+                (PP.text "Type:" PP.<+> arg PP.<$$>) .
+                  (PP.text "Value:" PP.<+>) <$> valueDoc 
+  in
+  liftA2
+    (\ret' args' ->
+      PP.text "Name: " <> PP.pretty (methodSpec ^. csMethod)
+      PP.<$$> PP.text "Location: " <> PP.pretty (plSourceLoc (methodSpec ^. csLoc))
+      PP.<$$> ret'
+      PP.<$$> PP.text "Arguments: "
+      PP.<$$> bullets '-' args')
+    ret
+    args
+
+
+-- | Pretty-print a method spec, omitting the argument and return values
 ppMethodSpec ::
   ( PP.Pretty (MethodId ext)
   , PP.Pretty (ExtType ext)
   ) =>
   CrucibleMethodSpecIR ext ->
   PP.Doc
-ppMethodSpec methodSpec =
-  PP.text "Name: " <> PP.pretty (methodSpec ^. csMethod)
-  PP.<$$> PP.text "Location: " <> PP.pretty (plSourceLoc (methodSpec ^. csLoc))
-  PP.<$$> PP.text "Argument types: "
-  PP.<$$> bullets '-' (map PP.pretty (methodSpec ^. csArgs))
-  PP.<$$> PP.text "Return type: " <> case methodSpec ^. csRet of
-                                       Nothing  -> PP.text "<void>"
-                                       Just ret -> PP.pretty ret
+ppMethodSpec = coerce (ppMethodSpecA (const (Nothing :: Maybe (Identity PP.Doc))))
 
 csAllocations :: CrucibleMethodSpecIR ext -> Map AllocIndex (AllocSpec ext)
 csAllocations

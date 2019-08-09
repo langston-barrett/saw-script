@@ -377,19 +377,17 @@ methodSpecHandler opts sc cc top_loc css retTy = do
   -- various overrides.
   branches <-
     let prettyError methodSpec failureReason =
-          MS.ppMethodSpec methodSpec PP.<$$> ppOverrideFailure failureReason
+          (PP.<$$> ppOverrideFailure failureReason) <$>
+            MS.ppMethodSpecA
+              (Just . resolveSetupVal cc Map.empty Map.empty Map.empty)
+              methodSpec
     in
       case partitionEithers prestates of
-        (errs, []) ->
+        (errs, []) -> do
+          msgs <- forM (zip css errs) $ \(cs, err) -> prettyError cs err
           fail $ show $
             PP.text "All overrides failed during structural matching:"
-            PP.<$$>
-              PP.vcat
-                (map (\(cs, err) ->
-                        PP.text "*" PP.<> PP.indent 2 (prettyError cs err))
-                    (zip css errs))
-            PP.<$$> PP.text "Actual function return type: " PP.<>
-                      PP.text (show (retTy))
+            PP.<$$> bullets '*' msgs
         (_, ss) -> liftIO $
           forM ss $ \(cs, omrw) ->
             return (OverrideWithPreconditions (prestateAsserts top_loc omrw) cs omrw)
