@@ -54,7 +54,7 @@ import           Control.Exception as X
 import           Control.Monad.IO.Class (liftIO)
 import           Control.Monad
 import           Data.Either (partitionEithers)
-import           Data.Foldable (for_, traverse_)
+import           Data.Foldable (traverse_)
 import           Data.List (tails)
 import           Data.Map (Map)
 import qualified Data.Map as Map
@@ -817,20 +817,21 @@ computeReturnValue opts cc sc spec ty (Just val) =
 assignVar ::
   Crucible.HasPtrWidth (Crucible.ArchWidth arch) =>
   LLVMCrucibleContext arch {- ^ context for interacting with Crucible -} ->
-  W4.ProgramLoc ->
   AllocIndex      {- ^ variable index -} ->
   LLVMPtr (Crucible.ArchWidth arch) {- ^ concrete value -} ->
-  OverrideMatcher (LLVM arch) md ()
+  OverrideMatcher (LLVM arch) md (Maybe (LabeledPred' Sym))
 
-assignVar cc loc var val =
+assignVar cc var val =
   do old <- OM (setupValueSub . at var <<.= Just val)
-     for_ old $ \val' ->
-       do p <- liftIO (equalValsPred cc (Crucible.ptrToPtrVal val') (Crucible.ptrToPtrVal val))
-          addAssert p $ Crucible.SimError loc $ Crucible.AssertFailureSimError $ unlines
-            [ "The following pointers had to alias, but they didn't:"
-            , "  " ++ show (Crucible.ppPtr val)
-            , "  " ++ show (Crucible.ppPtr val')
-            ]
+     case old of
+       Nothing -> return Nothing
+       Just val' ->
+         liftIO (equalValsPred cc (Crucible.ptrToPtrVal val') (Crucible.ptrToPtrVal val)) <&> \p ->
+           Just $ W4.LabeledPred p $ PP.vcat $
+             [ PP.text "The following pointers had to alias, but they didn't:"
+             , PP.indent 2 (Crucible.ppPtr val)
+             , PP.indent 2 (Crucible.ppPtr val')
+             ]
 
 
 ------------------------------------------------------------------------
@@ -877,8 +878,7 @@ matchArg opts sc cc cs prepost actual expectedTy expected =
 
       case expected of
         SetupVar var | Just Refl <- testEquality (W4.bvWidth off) Crucible.PtrWidth ->
-          do assignVar cc (cs ^. MS.csLoc) var (Crucible.LLVMPointer blk off)
-             return Nothing
+          assignVar cc var (Crucible.LLVMPointer blk off)
 
         SetupNull () | Just Refl <- testEquality (W4.bvWidth off) Crucible.PtrWidth ->
           do sym <- getSymInterface
@@ -1178,7 +1178,10 @@ executeAllocation opts cc (var, spec@(LLVMAllocSpec _mut memTy _sz loc)) =
      mem <- readGlobal memVar
      (ptr, mem') <- liftIO $ doAlloc cc spec mem
      writeGlobal memVar mem'
-     assignVar cc loc var ptr
+     assignVar cc var ptr >>=
+       \case
+         Just pred_ -> addLabeledAssert (labelWithSimError loc show pred_)
+         Nothing -> return ()
 
 ------------------------------------------------------------------------
 
